@@ -73,30 +73,12 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 
 ### 方式一：让 AI 助手一键安装（推荐）
 
-把下面整段话复制给 **MiMo 自带的 AI 助手 / Claude Code / Cursor / 任何能执行命令的助手**，
-它会自动完成克隆、安装、重启与验证：
+把下面这句话丢给任意能执行命令的 AI 助手（MiMo 自带助手 / Claude Code / Cursor 都行）：
 
 ```text
-帮我安装 mimo-meter 插件，仓库地址是 https://github.com/Cheney0819/mimo-meter.git
-
-请按以下步骤执行：
-1. 克隆仓库到一个合适的目录（比如 ~/mimo-meter 或 %USERPROFILE%\mimo-meter）
-2. 判断当前系统：
-   - macOS：执行 ./install.sh
-   - Windows：执行 powershell -ExecutionPolicy Bypass -File .\install.ps1
-3. 完全退出 MiMo Desktop（不是关窗口，是从托盘右键退出 / 结束所有进程）
-4. 重新启动 MiMo：
-   - macOS：env -u ELECTRON_RUN_AS_NODE open -a 'Xiaomi MiMo'
-   - Windows：从开始菜单启动，并先确认环境变量里没有 ELECTRON_RUN_AS_NODE
-5. 读取日志确认加载成功：
-   - macOS：~/Library/Logs/mimo-meter/mimo-meter.log
-   - Windows：%LOCALAPPDATA%\mimo-meter\mimo-meter.log
-   日志里应出现 booted {"plugin":"2.0.0","overlay":"2.0.0",...}
-6. 如果有报错，把日志内容贴出来给我看
-
-注意：
-- 不要修改 app.asar 或 runtime-res 下的任何文件
-- 安装脚本会自动备份并合并 engine-config/mimocode.jsonc，保留我已有的插件条目
+帮我安装 mimo-meter 插件：https://github.com/Cheney0819/mimo-meter.git
+克隆后按当前系统跑 install.sh 或 install.ps1，然后完全退出并重启 MiMo Desktop，
+确认日志出现 booted 就算成功，报错就把日志贴给我。
 ```
 
 装完打开任意会话，输入框下方应出现状态条。
@@ -162,7 +144,6 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 | --- | --- | --- |
 | **macOS** | ✅ 实机验证 | 截图与数据来自 macOS arm64，MiMo 26.1023.231655 |
 | **Windows** | ✅ 实机验证 | Windows 版已实机跑通，状态栏与卡片正常显示 |
-| **Linux** | ❔ 未验证 | 若 MiMo 有 Linux 版，路径走 `~/.config/Xiaomi MiMo` |
 
 平台差异只在**路径**，核心逻辑（桥拦截 / SQLite / 注入）完全一致：
 
@@ -414,7 +395,7 @@ src/
   mimo-meter.mjs          引擎插件（主进程）：事件订阅 / DB 统计 / 注入推送
   overlay.js              渲染进程浮层（幂等注入、开合、主题跟随）
   overlay.css             浮层样式（浅色/深色双主题）
-install.sh / uninstall.sh       macOS / Linux
+install.sh / uninstall.sh       macOS
 install.ps1 / uninstall.ps1     Windows
 docs/images/                    截图
 ```
@@ -434,7 +415,6 @@ docs/images/                    截图
 - [ ] 跨会话累计用量（今日 / 本周 / 全部）
 - [ ] 状态栏自定义：可选显示项、顺序、紧凑度
 - [ ] 导出会话用量为 CSV / JSON
-- [ ] Linux 版适配（需 MiMo 提供 Linux 客户端）
 
 ## 🤝 贡献
 

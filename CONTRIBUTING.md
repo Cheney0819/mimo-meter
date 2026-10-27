@@ -6,7 +6,7 @@
 src/mimo-meter.mjs    引擎插件（跑在 MiMo 的 Electron 主进程里）
 src/overlay.js        注入渲染进程的浮层逻辑
 src/overlay.css       浮层样式
-install.sh / uninstall.sh      macOS / Linux
+install.sh / uninstall.sh      macOS
 install.ps1 / uninstall.ps1    Windows
 ```
 
