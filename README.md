@@ -5,7 +5,7 @@
 **给 MiMo Desktop 加一条常驻状态栏：Token 用量 · 步数 · 缓存命中率 · 费用**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-2.0.2-green.svg)](../../releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#-平台支持)
 [![No Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen.svg)](#-隐私与安全)
 
@@ -38,7 +38,7 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 ## ✨ 功能
 
 - **实时状态栏** —— 轮数、步数、输出速度、总 token、缓存命中率，随会话滚动更新（400ms 合并刷新）
-- **明细卡片** —— 缓存读取/写入、未缓存输入、输出、推理、模型用时、工具调用用时、TTFT、TPS、费用
+- **两张独立明细卡** —— 左段点开是**会话统计**（模型用时 / 工具用时 / TTFT / TPS），右段点开是 **Token 用量**（缓存读写 / 未缓存输入 / 输出 / 推理 / 费用）；各开各的，互斥显示
 - **按会话精确统计** —— 切会话数字跟着换，不会串号
 - **首页不显示** —— 没有会话就没有数字，不在空页面上编造数据
 - **三档自适应宽度** —— 窗口变窄自动降级文案，永远不会盖住 app 自己的居中免责声明
@@ -54,7 +54,7 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 
 <img src="docs/images/bar.png" width="582" alt="底栏状态条：轮数、步数、tok/s、总量、缓存命中率">
 
-**明细卡片**（点状态栏或按 `⌥⌘T` 展开）
+**明细卡片**（点状态栏对应那一段展开：左段看会话统计，右段看 Token 用量）
 
 <img src="docs/images/panel.png" width="540" alt="Token 用量与会话统计卡片">
 
@@ -67,7 +67,7 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 | MiMo Desktop | 已安装并能正常启动（实测 26.1023.231655） |
 | 操作系统 | macOS / Windows（见[平台支持](#-平台支持)） |
 | 权限 | 无需管理员 / 无需 sudo |
-| 依赖 | 无。不需要 Node、Python、包管理器 |
+| 依赖 | 运行插件**零依赖**（只用 Electron + Node 标准库）。安装脚本需要 `python3` 或 `pwsh`/PowerShell 来安全地改 `mimocode.jsonc`；macOS 若没有可 `xcode-select --install` |
 
 ## 🚀 快速开始
 
@@ -109,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 **3. 验证**
 
-打开任意一个会话，输入框下方应出现状态条。点它（或按 `⌥⌘T`）展开明细卡片。
+打开任意一个会话，输入框下方应出现状态条。点「轮 / 步」那一段展开**会话统计**卡，点「tok / 命中率」那一段展开 **Token 用量**卡。
 
 日志位置：
 
@@ -121,17 +121,19 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 正常启动应包含：
 
 ```
-booted {"plugin":"2.0.0","overlay":"2.0.0","platform":"darwin",...}
+booted {"plugin":"2.0.2","overlay":"2.0.2","platform":"darwin",...}
 ```
 
 **卸载**
 
 ```bash
-./uninstall.sh          # macOS
+./uninstall.sh              # macOS：只移除插件
+./uninstall.sh --purge      # 额外删除日志与 metrics.json
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1           # Windows
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge    # 连日志一起删
 ```
 
 然后重启应用。`uninstall` 会同时清理旧版本（`mimo-stats`）的残留。
@@ -183,16 +185,26 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
-| `currency` | `"¥"` | `costCny` 拿不到时的兜底符号 |
+| `currency` | `"¥"` | 金额前缀符号 |
 | `fx` | `1 / 0.14` | 美元 → 人民币汇率（见[费用](#-费用是什么货币)） |
-| `showCny` | `true` | 是否显示人民币；`false` 则显示引擎原值（美元） |
+| `showCny` | `true` | `true` 显示换算后的人民币；`false` 显示引擎原值（美元） |
+
+> [!NOTE]
+> `currency` 只改前缀符号，不会做单位换算；要显示美元请同时设
+> `"showCny": false, "currency": "$"`。重装不会清掉这些选项——
+> 安装脚本会继承已有条目里的 `options`。
 
 ### 快捷键
 
 | 按键 | 动作 |
 | --- | --- |
-| `⌥⌘T` | 展开 / 收起明细卡片 |
-| `Esc` | 收起卡片 |
+| 点「轮 / 步 / tok/s」那段 | 展开 **会话统计** 卡（模型用时 / 工具用时 / TTFT / TPS） |
+| 点「tok / 命中率」那段 | 展开 **Token 用量** 卡（缓存读写 / 输出 / 推理 / 费用） |
+| `⌥⌘T` | 开合 Token 用量卡 |
+| `⌥⌘Y` | 开合会话统计卡 |
+| `Esc` | 收起当前卡片 |
+
+两张卡片各自独立、互斥展开（同时只开一张）。
 
 ## 📊 数据口径
 
@@ -215,6 +227,23 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 > **总量必须含 `reasoning`**。引擎的 `tokens.total` 定义是
 > `input + output + reasoning + cache.read + cache.write`，
 > 漏掉 `reasoning` 会导致每个会话都少算（v1.6.4 修过一次）。
+
+> [!NOTE]
+> **费用为 0 时显示 `¥0.000`，不再整行隐藏**。v2.0.1 起区分「没有数据」和
+> 「确实是 0 元」——后者（免费额度、本地模型）以前会被误当成缺失值。
+
+### 刷新策略
+
+面板每 400ms 尝试刷新，但**不会每次都查数据库**：
+
+| 时机 | 行为 |
+| --- | --- |
+| 流式输出中（`message.part.delta`） | 只更新忙碌指示与 TPS，**不查库**（此时库还没落盘） |
+| `message.updated` / `part.updated` / `session.idle` | 让缓存失效，下一 tick 重新聚合 |
+| 切换会话 | 清掉该会话缓存后立即重算 |
+
+统计结果按会话缓存（最多 8 个）。实测一个 1 万条消息的会话，完整聚合约
+17ms，缓存命中为 0ms；流式回答期间主进程 CPU 从约 4.8% 降到接近 0。
 
 ### 当前会话是怎么定位的
 
@@ -384,7 +413,10 @@ env -u ELECTRON_RUN_AS_NODE open -a 'Xiaomi MiMo'
 | `engine-config/mimocode.jsonc` | 追加一条登记（保留已有条目） |
 | 日志目录 | 运行日志 + `metrics.json`（TTFT/TPS 累计） |
 
-**审计建议**：全部逻辑在 `src/` 三个文件、约 1900 行，无压缩无混淆，可直接阅读。
+**审计建议**：全部逻辑在 `src/` 三个文件、约 2000 行，无压缩无混淆，可直接阅读。
+
+> 日志与 `metrics.json` 默认**不随卸载删除**（便于排查残留问题）。
+> 需要一起清掉请用 `./uninstall.sh --purge` 或 `uninstall.ps1 -Purge`。
 
 ## 📁 项目结构
 
@@ -393,6 +425,13 @@ src/
   mimo-meter.mjs          引擎插件（主进程）：事件订阅 / DB 统计 / 注入推送
   overlay.js              渲染进程浮层（幂等注入、开合、主题跟随）
   overlay.css             浮层样式（浅色/深色双主题）
+scripts/
+  jsonc_edit.py           mimocode.jsonc 的安全编辑器（macOS/Linux）
+  jsonc_edit.ps1          同上（Windows / PowerShell）
+  test_jsonc_edit.py      配置编辑回归测试（48 项）
+  test_jsonc_edit.ps1     配置编辑回归测试（53 项）
+  test_overlay.mjs        浮层行为测试（17 项，需 Chrome）
+  check-version.mjs       版本号一致性检查
 install.sh / uninstall.sh       macOS
 install.ps1 / uninstall.ps1     Windows
 docs/images/                    截图
@@ -421,7 +460,10 @@ docs/images/                    截图
 ```bash
 node --check src/mimo-meter.mjs
 node --check src/overlay.js
-bash -n install.sh
+bash -n install.sh && bash -n uninstall.sh
+node scripts/check-version.mjs
+python3 scripts/test_jsonc_edit.py
+node scripts/test_overlay.mjs        # 需要 Chrome
 ```
 
 ## 📄 License

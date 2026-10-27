@@ -21,7 +21,7 @@ install.ps1 / uninstall.ps1    Windows
    ```
 3. 看日志确认加载成功：
    ```bash
-   tail -5 ~/Library/Logs/Xiaomi MiMo\ Stats/mimo-meter.log
+   tail -5 ~/Library/Logs/mimo-meter/mimo-meter.log
    ```
    应包含 `booted {"plugin":"x.y.z","overlay":"x.y.z","platform":"darwin",...}`
 
@@ -45,7 +45,16 @@ total = input + output + reasoning + cache.read + cache.write
 ```bash
 node --check src/mimo-meter.mjs
 node --check src/overlay.js
-bash -n install.sh
+bash -n install.sh && bash -n uninstall.sh
+node scripts/check-version.mjs
+```
+
+配置编辑逻辑有回归测试，改动 `scripts/jsonc_edit.*` 后请跑：
+
+```bash
+python3 scripts/test_jsonc_edit.py                       # 48 项
+pwsh -NoLogo -File scripts/test_jsonc_edit.ps1           # 53 项（Windows / pwsh）
+node scripts/test_overlay.mjs                            # 17 项，需要 Chrome
 ```
 
 并确认没有把个人路径、会话标题、`metrics.json`、日志文件带进提交。
