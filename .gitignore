@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# 日志与本地数据（绝不要提交）
+*.log
+metrics.json
+mimo-stats.log
+
+# 临时文件
+*.tmp
+/tmp/
