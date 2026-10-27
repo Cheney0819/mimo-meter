@@ -37,6 +37,14 @@ path = os.path.join(cfg, "mimocode.jsonc")
 data = {}
 if os.path.exists(path):
     raw = open(path, encoding="utf-8").read()
+    # 改动前先备份，方便手动回滚
+    backup = path + ".bak"
+    try:
+        with open(backup, "w", encoding="utf-8") as bf:
+            bf.write(raw)
+        print("已备份原配置：" + backup)
+    except Exception as e:
+        print("备份失败（继续）：" + str(e))
     # 允许带注释的 jsonc：先尝试严格解析，失败就按行去掉 // 注释
     try:
         data = json.loads(raw)

@@ -9,7 +9,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#-平台支持)
 [![No Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen.svg)](#-隐私与安全)
 
-[这是什么](#-这是什么) · [功能](#-功能) · [截图](#-截图) · [快速开始](#-快速开始) · [配置](#配置) · [数据口径](#-数据口径) · [工作原理](#-工作原理) · [排错](#-排错) · [FAQ](#-faq)
+[这是什么](#-这是什么) · [功能](#-功能) · [截图](#-截图) · [一键安装](#-快速开始) · [配置](#配置) · [数据口径](#-数据口径) · [工作原理](#-工作原理) · [排错](#-排错) · [FAQ](#-faq)
 
 </div>
 
@@ -71,14 +71,46 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 
 ## 🚀 快速开始
 
-### 1. 克隆
+### 方式一：让 AI 助手一键安装（推荐）
+
+把下面整段话复制给 **MiMo 自带的 AI 助手 / Claude Code / Cursor / 任何能执行命令的助手**，
+它会自动完成克隆、安装、重启与验证：
+
+```text
+帮我安装 mimo-meter 插件，仓库地址是 https://github.com/Cheney0819/mimo-meter.git
+
+请按以下步骤执行：
+1. 克隆仓库到一个合适的目录（比如 ~/mimo-meter 或 %USERPROFILE%\mimo-meter）
+2. 判断当前系统：
+   - macOS：执行 ./install.sh
+   - Windows：执行 powershell -ExecutionPolicy Bypass -File .\install.ps1
+3. 完全退出 MiMo Desktop（不是关窗口，是从托盘右键退出 / 结束所有进程）
+4. 重新启动 MiMo：
+   - macOS：env -u ELECTRON_RUN_AS_NODE open -a 'Xiaomi MiMo'
+   - Windows：从开始菜单启动，并先确认环境变量里没有 ELECTRON_RUN_AS_NODE
+5. 读取日志确认加载成功：
+   - macOS：~/Library/Logs/mimo-meter/mimo-meter.log
+   - Windows：%LOCALAPPDATA%\mimo-meter\mimo-meter.log
+   日志里应出现 booted {"plugin":"2.0.0","overlay":"2.0.0",...}
+6. 如果有报错，把日志内容贴出来给我看
+
+注意：
+- 不要修改 app.asar 或 runtime-res 下的任何文件
+- 安装脚本会自动备份并合并 engine-config/mimocode.jsonc，保留我已有的插件条目
+```
+
+装完打开任意会话，输入框下方应出现状态条。
+
+### 方式二：手动安装
+
+**1. 克隆**
 
 ```bash
-git clone https://github.com/<your-name>/mimo-meter.git
+git clone https://github.com/Cheney0819/mimo-meter.git
 cd mimo-meter
 ```
 
-### 2. 安装
+**2. 安装**
 
 **macOS**
 
@@ -95,7 +127,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 # 然后从托盘图标右键完全退出 MiMo，再从开始菜单重新打开
 ```
 
-### 3. 验证
+**3. 验证**
 
 打开任意一个会话，输入框下方应出现状态条。点它（或按 `⌥⌘T`）展开明细卡片。
 
@@ -112,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 booted {"plugin":"2.0.0","overlay":"2.0.0","platform":"darwin",...}
 ```
 
-### 卸载
+**卸载**
 
 ```bash
 ./uninstall.sh          # macOS
@@ -128,8 +160,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 
 | 平台 | 状态 | 说明 |
 | --- | --- | --- |
-| **macOS** | ✅ 实机验证 | 所有截图与数据来自 macOS arm64，MiMo 26.1023.231655 |
-| **Windows** | ⚠️ 代码已跨平台，**未实机验证** | 只依赖 Electron + Node 标准库；[验证清单](#windows-首次安装验证清单) |
+| **macOS** | ✅ 实机验证 | 截图与数据来自 macOS arm64，MiMo 26.1023.231655 |
+| **Windows** | ✅ 实机验证 | Windows 版已实机跑通，状态栏与卡片正常显示 |
 | **Linux** | ❔ 未验证 | 若 MiMo 有 Linux 版，路径走 `~/.config/Xiaomi MiMo` |
 
 平台差异只在**路径**，核心逻辑（桥拦截 / SQLite / 注入）完全一致：
@@ -141,15 +173,19 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1   # Windows
 | 引擎数据库 | `~/.local/share/mimocode/mimocode.db` | `%LOCALAPPDATA%\mimocode\mimocode.db`（多候选） |
 | 字体栈 | SF / PingFang | Segoe UI / 微软雅黑 |
 
-### Windows 首次安装验证清单
+### Windows 安装自检
 
-1. `%APPDATA%\Xiaomi MiMo\engine-config` 存在 → userData 路径正确
-2. 日志里有这三行 → 全链路通
-   - `db opened ...` —— 数据库路径正确
-   - `bridge hooked {handlers:252}` —— 桥拦截成功
-   - `booted {...}` —— 插件加载成功
-3. 打开会话 → 状态条出现 → 点开有明细
-4. 若出现 `bridge module not found` 或 `db missing`，请[提 issue](../../issues) 附上日志
+装完如果状态条没出现，按顺序看日志（`%LOCALAPPDATA%\mimo-meter\mimo-meter.log`）：
+
+| 日志内容 | 含义 |
+| --- | --- |
+| `db opened ...` | 数据库路径正确 |
+| `bridge hooked {handlers:252}` | 桥拦截成功 |
+| `booted {"platform":"win32",...}` | 插件加载成功 |
+| `bridge module not found` | runtime 目录结构变化，请附日志提 issue |
+| 完全没有日志文件 | 插件没被加载，检查 `mimocode.jsonc` 里的 `file://` 路径 |
+
+另外确认 `%APPDATA%\Xiaomi MiMo\engine-config` 存在（说明 userData 路径正确）。
 
 ## 配置
 

@@ -34,6 +34,13 @@ $jsonc = Join-Path $cfg "mimocode.jsonc"
 $data = $null
 if (Test-Path $jsonc) {
   $raw = Get-Content $jsonc -Raw -Encoding UTF8
+  # 改动前先备份，方便手动回滚
+  try {
+    Copy-Item $jsonc "$jsonc.bak" -Force
+    Write-Host "已备份原配置：$jsonc.bak"
+  } catch {
+    Write-Host "备份失败（继续）：$_"
+  }
   try { $data = $raw | ConvertFrom-Json } catch { $data = $null }
 }
 
