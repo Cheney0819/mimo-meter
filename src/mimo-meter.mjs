@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const VERSION = "2.0.2";
+const VERSION = "2.0.3";
 const TICK_MS = 400;
 const SID_POLL_MS = 900;
 const DB_RETRY_MS = 5000;      // 打不开数据库时的重试间隔

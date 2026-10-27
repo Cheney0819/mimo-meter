@@ -5,7 +5,7 @@
 **给 MiMo Desktop 加一条常驻状态栏：Token 用量 · 步数 · 缓存命中率 · 费用**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.2-green.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-2.0.3-green.svg)](../../releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#-平台支持)
 [![No Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen.svg)](#-隐私与安全)
 
@@ -130,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 正常启动应包含：
 
 ```
-booted {"plugin":"2.0.2","overlay":"2.0.2","platform":"darwin",...}
+booted {"plugin":"2.0.3","overlay":"2.0.3","platform":"darwin",...}
 ```
 
 **卸载**

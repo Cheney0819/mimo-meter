@@ -201,9 +201,41 @@ function buildPage() {
   var host = document.getElementById('mimo-meter-host');
   ok('sid=null 时进入 idle', host.classList.contains('mm-idle'));
 
+  // ---- 空会话不该显示 ----
+  var hostEl = document.getElementById('mimo-meter-host');
+  var barEl = hostEl.querySelector('.mm-bar');
+
+  // 刚新建的会话有 sid，但一条消息都没有 → 应隐藏，不该出现「— / 0 tok」
+  api2.update(Object.assign({}, base, {
+    rounds: 0, steps: 0,
+    tokens: { total: 0, input: 0, output: 0, reasoning: 0, read: 0, write: 0 },
+    cost: null, costCny: null, tokPerSec: null, timing: {},
+  }));
+  ok('空会话隐藏（mm-idle）', hostEl.classList.contains('mm-idle'));
+  ok('空会话时状态条不可见', getComputedStyle(barEl).display === 'none', getComputedStyle(barEl).display);
+
+  // 发过一句话就应显示
+  api2.update(Object.assign({}, base, {
+    rounds: 1, steps: 0,
+    tokens: { total: 0, input: 0, output: 0, reasoning: 0, read: 0, write: 0 },
+  }));
+  ok('发过消息后显示', !hostEl.classList.contains('mm-idle'));
+
+  // 只有助手步骤（导入的会话）也应显示
+  api2.update(Object.assign({}, base, {
+    rounds: 0, steps: 3,
+    tokens: { total: 0, input: 0, output: 0, reasoning: 0, read: 0, write: 0 },
+  }));
+  ok('只有步骤也显示', !hostEl.classList.contains('mm-idle'));
+
+  // 有 token 但没轮没步（异常数据）也应显示
+  api2.update(Object.assign({}, base, { rounds: 0, steps: 0 }));
+  ok('有 token 就显示', !hostEl.classList.contains('mm-idle'));
+
+  api2.update(base);
+
   // ---- 两张卡片独立开合 ----
   api2.update(base);
-  var hostEl = document.getElementById('mimo-meter-host');
   var segTokEl = hostEl.querySelector('.mm-seg-tok');
   var segStatEl = hostEl.querySelector('.mm-seg-stat');
   var panelTokEl = hostEl.querySelector('.mm-panel-tok');

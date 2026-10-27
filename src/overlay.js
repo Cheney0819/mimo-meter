@@ -9,7 +9,7 @@
  * 幂等：重复注入只刷新版本，不堆 DOM。
  */
 (function () {
-  var VERSION = "2.0.2";
+  var VERSION = "2.0.3";
   var HOST_ID = "mimo-meter-host";
 
   /* 热重载：先把上一个实例彻底拆掉（observer / 监听器 / DOM），
@@ -796,10 +796,22 @@
       if (state.which) setOpen(null);
       return;
     }
-    host.classList.remove("mm-idle");
 
     var t = d.tokens || {};
     var total = t.total || 0;
+
+    /* 刚新建、还没开始聊的会话：引擎已经建了 session 记录（所以有 sid），
+       但一条消息都没有。这时候显示「— / 0 tok」只是噪音，直接按空闲处理隐藏掉。
+       判据用「轮 / 步 / token 全为 0」，只要用户发过一句话（轮>=1）
+       或助手跑过一步（步>=1）就正常显示。 */
+    var isEmpty = !d.rounds && !d.steps && !total;
+    if (isEmpty) {
+      host.classList.add("mm-idle");
+      host.classList.remove("mm-busy");
+      if (state.which) setOpen(null);
+      return;
+    }
+    host.classList.remove("mm-idle");
     var rate = t.read != null && t.read + (t.input || 0) > 0 ? t.read / (t.read + (t.input || 0)) : null;
     host.classList.toggle("mm-busy", !!d.busy);
     approxTag.style.display = d.approx ? "" : "none";
