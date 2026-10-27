@@ -77,8 +77,6 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 
 ```text
 帮我安装 mimo-meter 插件：https://github.com/Cheney0819/mimo-meter.git
-克隆后按当前系统跑 install.sh 或 install.ps1，然后完全退出并重启 MiMo Desktop，
-确认日志出现 booted 就算成功，报错就把日志贴给我。
 ```
 
 装完打开任意会话，输入框下方应出现状态条。
