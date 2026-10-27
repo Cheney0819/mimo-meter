@@ -371,9 +371,12 @@ function ConvertTo-FileUri {
 }
 
 function Get-MimoMeterVersion {
+  <# 注意：不能用 [System.IO.File]::ReadLines() 的枚举器在循环里提前 return，
+     那样文件句柄不会释放，Windows 上会导致文件被占用、删不掉。
+     这里用 ReadAllLines 一次性读完，句柄立即关闭。 #>
   param([string]$MjsPath)
   try {
-    foreach ($line in [System.IO.File]::ReadLines($MjsPath)) {
+    foreach ($line in [System.IO.File]::ReadAllLines($MjsPath)) {
       $t = $line.Trim()
       if ($t.StartsWith('const VERSION = ')) {
         $parts = $t.Split('"')

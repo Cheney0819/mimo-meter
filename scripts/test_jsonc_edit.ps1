@@ -258,7 +258,23 @@ $d = New-TempDir '{}'
 $p = Join-Path $d "x.mjs"
 [System.IO.File]::WriteAllText($p, 'const VERSION = "2.0.1";' + "`n", (New-Object System.Text.UTF8Encoding $false))
 Check "读到版本" ((Get-MimoMeterVersion $p) -eq "2.0.1")
-Remove-Item -Recurse -Force $d
+
+# 关键：读版本后不能留下文件句柄。Windows 上句柄没释放会导致文件删不掉，
+# CI 里就是因此报的错（macOS 不锁文件，本地测不出来）。
+$canExclusive = $false
+try {
+  $fs = [System.IO.File]::Open($p, 'Open', 'ReadWrite', 'None')
+  $fs.Close()
+  $canExclusive = $true
+} catch { $canExclusive = $false }
+Check "读版本后文件句柄已释放" $canExclusive
+
+$canDelete = $false
+try {
+  Remove-Item -Recurse -Force $d -ErrorAction Stop
+  $canDelete = $true
+} catch { $canDelete = $false }
+Check "读版本后临时目录可删除" $canDelete
 
 Write-Host "[19] 输入文件带 BOM 也能正确处理"
 $d = New-TempDir '{}'
