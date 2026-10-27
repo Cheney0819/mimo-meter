@@ -33,9 +33,6 @@
   font-size: 10px;
 }
 
-#mimo-meter-host[data-mode="inline"] .mm-bar {
-  /* max-width 由 fitBar() 按免责声明文本左边缘动态写入 */
-}
 #mimo-meter-host[data-mode="inline"] .mm-seg {
   min-width: 0;
   overflow: hidden;
@@ -45,41 +42,12 @@
 #mimo-meter-host[data-mode="inline"] .mm-chip {
   display: none;
 }
-#mimo-meter-host[data-mode="inline"] .mm-panel {
-  position: absolute;
-  right: 0;
-  bottom: 100%;
-  margin-bottom: 9px;
-}
 
 #mimo-meter-host.mm-idle .mm-bar,
 #mimo-meter-host.mm-idle .mm-chip {
   display: none !important;
 }
 
-#mimo-meter-host[data-layout="stack"] {
-  align-items: flex-start;
-}
-#mimo-meter-host[data-layout="stack"] .mm-bar {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  height: auto;
-  padding: 0 0 2px 2px;
-  font-size: 10.5px;
-  line-height: 15px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-#mimo-meter-host[data-layout="stack"] .mm-seg {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#mimo-meter-host[data-layout="stack"] .mm-seg svg {
-  width: 10px;
-  height: 10px;
-}
 
 .mm-bar {
   display: inline-flex;
@@ -94,7 +62,7 @@
   font-size: 11px;
   line-height: 15px;
   color: #8a8a8f;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
   white-space: nowrap;
@@ -113,6 +81,23 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* 两段各自是按钮：可点、可聚焦，且要能作为卡片定位的参照系 */
+  position: relative;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 2px;
+  margin: -1px -2px;
+  transition: background-color 0.12s ease;
+}
+.mm-seg:hover {
+  background: rgba(0, 0, 0, 0.045);
+}
+.mm-seg:focus-visible {
+  outline: 2px solid rgba(0, 122, 255, 0.55);
+  outline-offset: 1px;
+}
+#mimo-meter-host[data-theme="dark"] .mm-seg:hover {
+  background: rgba(255, 255, 255, 0.07);
 }
 .mm-seg svg {
   width: 11px;
@@ -129,7 +114,8 @@
   align-items: center;
   height: 13px;
   padding: 0 5px;
-  margin-right: 8px;
+  margin-right: 6px;
+  flex: none;
   border-radius: 999px;
   font-size: 9.5px;
   line-height: 1;
@@ -166,7 +152,7 @@
   font-weight: 500;
   line-height: 1;
   color: #4c4c51;
-  cursor: default;
+  cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
   white-space: nowrap;
@@ -201,7 +187,10 @@
 /* ---------------- 卡片 ---------------- */
 .mm-panel {
   display: none;
+  /* border-box：maxHeight 必须包含 padding/border，否则限高会算少 ~20px 而溢出 */
+  box-sizing: border-box;
   width: 288px;
+  max-width: calc(100vw - 32px);
   padding: 12px 14px 10px;
   border-radius: 14px;
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -209,11 +198,24 @@
   -webkit-backdrop-filter: blur(26px) saturate(1.7);
   backdrop-filter: blur(26px) saturate(1.7);
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.17), 0 2px 8px rgba(0, 0, 0, 0.05);
-  transform-origin: bottom right;
+  /* 锚定在各自的分段上（.mm-seg 是 position: relative） */
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 9px;
 }
-.mm-open .mm-panel {
+/* 两张卡片各自开合，互斥（同时只有一张带 mm-open-*） */
+.mm-open-tok .mm-panel-tok,
+.mm-open-stat .mm-panel-stat {
   display: block;
   animation: mm-pop 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mm-panel-tok {
+  right: 0;
+  transform-origin: bottom right;
+}
+.mm-panel-stat {
+  left: 0;
+  transform-origin: bottom left;
 }
 @keyframes mm-pop {
   from { opacity: 0; transform: translateY(6px) scale(0.97); }
@@ -287,26 +289,32 @@
 }
 .mm-foot {
   display: flex;
-  align-items: baseline;
+  align-items: baseline;   /* 基线对齐：两侧字号不同也能视觉齐平 */
   justify-content: space-between;
   gap: 10px;
   margin-top: 3px;
   font-size: 11px;
+  line-height: 1.35;
   color: #86868b;
   font-variant-numeric: tabular-nums;
+}
+.mm-foot-l {
+  flex: none;
 }
 .mm-foot-r {
   font-weight: 500;
 }
+/* 模型名：现在是 .mm-foot 的 flex 子项，和「N 轮 · M 步」同一行。
+   靠 margin-left: auto 推到右边，不再用 text-align。 */
 .mm-cost {
-  margin-top: 3px;
+  margin-left: auto;
   font-size: 10.5px;
   color: #a1a1a6;
-  text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* ---------------- 深色 ---------------- */

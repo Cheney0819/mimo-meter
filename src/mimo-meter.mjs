@@ -19,9 +19,14 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const VERSION = "2.0.0";
+const VERSION = "2.0.2";
 const TICK_MS = 400;
 const SID_POLL_MS = 900;
+const DB_RETRY_MS = 5000;      // 打不开数据库时的重试间隔
+const LOG_MAX_BYTES = 1_000_000;
+/* 桥信号在这么久之内出现过，就不采信渲染进程的 fetch 兜底
+   （fetch 可能是预取/后台请求，采信了会串号） */
+const BRIDGE_TRUST_MS = 8000;
 
 const HOME = os.homedir();
 const PLATFORM = process.platform; // darwin / win32 / linux
@@ -43,20 +48,61 @@ function logRoot() {
   if (PLATFORM === "darwin") return path.join(HOME, "Library", "Logs", "mimo-meter");
   return path.join(process.env.XDG_STATE_HOME || path.join(HOME, ".local", "state"), "mimo-meter");
 }
+/* ------------------------------------------------------------------ 日志
+   在 Electron 主进程里同步写盘会卡事件循环，所以这里改成：
+   攒在内存里，到阈值或定时器触发时一次性 append。退出前尽力 flush。 */
+
 const LOG_FILE = path.join(logRoot(), "mimo-meter.log");
+const LOG_BUFFER_MAX = 64 * 1024;
+const logBuf = [];
+let logBufBytes = 0;
+let logFlushTimer = null;
+let logRotated = false;
+
+function flushLog() {
+  if (!logBuf.length) return;
+  const chunk = logBuf.join("");
+  logBuf.length = 0;
+  logBufBytes = 0;
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    if (!logRotated) {
+      logRotated = true;
+      try {
+        if (fs.statSync(LOG_FILE).size > LOG_MAX_BYTES) fs.renameSync(LOG_FILE, LOG_FILE + ".1");
+      } catch {}
+    }
+    fs.appendFileSync(LOG_FILE, chunk);
+  } catch {}
+}
+
+function scheduleLogFlush() {
+  if (logFlushTimer) return;
+  logFlushTimer = setTimeout(() => {
+    logFlushTimer = null;
+    flushLog();
+  }, 1000);
+  if (logFlushTimer.unref) logFlushTimer.unref();
+}
 
 function log(...args) {
   try {
-    const dir = path.dirname(LOG_FILE);
-    fs.mkdirSync(dir, { recursive: true });
-    try {
-      if (fs.statSync(LOG_FILE).size > 1_000_000) fs.renameSync(LOG_FILE, LOG_FILE + ".1");
-    } catch {}
     const line = `[${new Date().toISOString()}] ${args
-      .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+      .map((a) => (typeof a === "string" ? a : safeStringify(a)))
       .join(" ")}\n`;
-    fs.appendFileSync(LOG_FILE, line);
+    logBuf.push(line);
+    logBufBytes += line.length;
+    if (logBufBytes >= LOG_BUFFER_MAX) flushLog();
+    else scheduleLogFlush();
   } catch {}
+}
+
+function safeStringify(v) {
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
 }
 
 /* ------------------------------------------------------------------ 路径 */
@@ -155,9 +201,21 @@ async function getSqlite() {
 
 let db = null;
 let dbPath = null;
+let dbAttemptedAt = 0;
+let dbPrepared = null;   // 复用已编译语句，省掉每次 prepare 的开销
 
-async function openDb() {
+function resetPrepared() {
+  dbPrepared = null;
+}
+
+async function openDb({ force = false } = {}) {
   if (db) return db;
+  /* 打开失败过就等一会儿再试，避免每 400ms 都去撞一次文件系统。
+     force=true 时（例如发现库文件刚出现）立刻重试。 */
+  const now = Date.now();
+  if (!force && dbAttemptedAt && now - dbAttemptedAt < DB_RETRY_MS) return null;
+  dbAttemptedAt = now;
+
   const SQL = await getSqlite();
   if (!SQL) return null;
   for (const candidate of dbCandidates()) {
@@ -165,6 +223,7 @@ async function openDb() {
       if (!fs.existsSync(candidate)) continue;
       db = new SQL(candidate, { readOnly: true });
       dbPath = candidate;
+      resetPrepared();
       log("db opened", candidate);
       return db;
     } catch (err) {
@@ -234,22 +293,77 @@ WHERE session_id = ?
   AND json_extract(data,'$.type') = 'step-finish'
 `;
 
+/* 语句只编译一次。表结构变了（极少见）会抛错，那时清缓存再重试一次。 */
+function stmts() {
+  if (dbPrepared) return dbPrepared;
+  dbPrepared = {
+    session: db.prepare(Q_SESSION),
+    steps: db.prepare(Q_STEPS),
+    tools: db.prepare(Q_TOOLS),
+    recent: db.prepare(Q_RECENT),
+    title: db.prepare(Q_TITLE),
+  };
+  return dbPrepared;
+}
+
+/* ---------------------------------------------------------------- 会话统计
+ *
+ * 性能要点：refresh 每 400ms 跑一次，而完整统计在大会话上要 ~17ms。
+ * 但真正需要重算的时机只有「库被写过」——流式输出期间 message.part.delta
+ * 每秒几百次，库里其实一条都没落。所以：
+ *   - dirty 由 message.updated / message.part.updated / session.idle 这类
+ *     「库真的会变」的事件置位；
+ *   - readSessionStats 只在 dirty 时才真的查库，否则复用上次结果；
+ *   - 结果按 sid 缓存，切会话回来能直接命中。
+ * 这样流式期间数据库查询次数从 ~2.5 次/秒 降到 0，出字流畅度不受影响。
+ */
+
+const statsCache = new Map(); // sid -> stats
+const STATS_CACHE_MAX = 8;
+
 function readSessionStats(sid) {
   if (!db || !sid) return null;
+  const cached = statsCache.get(sid);
+  if (cached) return cached;
+  const stats = computeSessionStats(sid);
+  if (stats) {
+    statsCache.set(sid, stats);
+    if (statsCache.size > STATS_CACHE_MAX) {
+      /* Map 保序：删最久没被写入的那条 */
+      const oldest = statsCache.keys().next().value;
+      if (oldest !== undefined && oldest !== sid) statsCache.delete(oldest);
+    }
+  }
+  return stats;
+}
+
+function invalidateStats(sid) {
+  if (sid) statsCache.delete(sid);
+  else statsCache.clear();
+}
+
+function computeSessionStats(sid) {
   try {
-    const row = db.prepare(Q_SESSION).get(sid);
+    const s = stmts();
+    const row = s.session.get(sid);
     if (!row) return null;
+
     let steps = 0;
     try {
-      steps = db.prepare(Q_STEPS).get(sid)?.steps ?? 0;
+      steps = s.steps.get(sid)?.steps ?? 0;
     } catch (err) {
       log("steps query failed", String(err?.message || err));
     }
-    if (!steps) steps = row.assistants || 0;
+    /* 步数查不到（老版本库 / schema 变化）时退回助手消息数，
+       这是个近似值，日志里标出来方便排查。 */
+    if (!steps) {
+      steps = row.assistants || 0;
+      if (steps) log("steps degraded to assistants", sid, steps);
+    }
 
     let toolMs = 0;
     try {
-      toolMs = num(db.prepare(Q_TOOLS).get(sid)?.tool_ms);
+      toolMs = num(s.tools.get(sid)?.tool_ms);
     } catch (err) {
       log("tool time query failed", String(err?.message || err));
     }
@@ -265,6 +379,9 @@ function readSessionStats(sid) {
     const reasoning = num(row.t_reasoning);
     const read = num(row.t_cache_read);
     const write = num(row.t_cache_write);
+    /* cost 用 ?? 而不是 ||：免费会话的 0 也应该显示成 ¥0.00，
+       而不是被当成「没有数据」整行隐藏。 */
+    const cost = row.cost == null ? null : num(row.cost);
     return {
       sid,
       title: row.title ?? null,
@@ -281,12 +398,14 @@ function readSessionStats(sid) {
         read,
         write,
       },
-      cost: num(row.cost) || null,
+      cost,
       timing: { modelMs, toolMs, ttftMs, tps },
       firstAt: num(row.first_at) || null,
       lastAt: num(row.last_at) || null,
     };
   } catch (err) {
+    /* schema 变了会让缓存的语句失效，清掉下次重建 */
+    resetPrepared();
     log("stats query failed", String(err?.message || err));
     return null;
   }
@@ -310,12 +429,14 @@ function engineState() {
     busy: new Map(), // sid -> bool
     rates: new Map(), // sid -> [{at, rate}]
     pageSid: null,     // 页面真实展示的会话（权威，来自桥拦截）
+    pageSidSource: null, // bridge / fetch / title —— 决定谁优先
+    pageSidAt: 0,      // 该信号最后一次出现的时间
+    fetchIgnored: false, // 日志去重：已经记录过「忽略 fetch 信号」
     pageView: null,    // home / thread / unknown
     currency: "¥",     // 面板主显示用人民币（引擎原值仍是美元）
     fx: 1 / 0.14,      // 官方人民币价 ÷ 0.14 → 换算回人民币
     showCny: true,
     bridgeHooked: false,
-    activeSid: null, // 兼容旧字段，不再使用
     lastPush: 0,
     windows: new WeakMap(), // webContents -> { cssKey }
     pollTimer: null,
@@ -426,12 +547,16 @@ async function pollSid(st) {
       );
       if (!r || !r.mounted) {
         st.pageSid = null;
+        st.pageSidSource = null;
         await injectWindow(st, win);
         continue;
       }
       if (r.view && r.view !== st.pageView) {
         st.pageView = r.view;
-        if (r.view === "home") st.pageSid = null;
+        if (r.view === "home") {
+          st.pageSid = null;
+          st.pageSidSource = null;
+        }
         st.dirty = true;
         await refresh(st, { force: true });
       }
@@ -439,15 +564,30 @@ async function pollSid(st) {
         const byTitle = sidByTitle(st, r.headerTexts);
         if (byTitle && byTitle !== st.pageSid) {
           st.pageSid = byTitle;
+          st.pageSidSource = "title";
+          st.pageSidAt = Date.now();
           st.dirty = true;
           log("pageSid by title ->", byTitle);
           await refresh(st, { force: true });
         }
       }
+      /* fetch 信号是「最后一次请求命中的 sid」，可能是预取/后台请求，
+         所以它只是兜底：桥信号在 BRIDGE_TRUST_MS 内出现过就不采信它。 */
       if (r.sid && r.sid !== st.pageSid) {
-        st.pageSid = r.sid;
-        st.dirty = true;
-        await refresh(st, { force: true });
+        const bridgeFresh =
+          st.pageSidSource === "bridge" && Date.now() - (st.pageSidAt || 0) < BRIDGE_TRUST_MS;
+        if (bridgeFresh) {
+          if (!st.fetchIgnored) {
+            st.fetchIgnored = true;
+            log("ignore fetch sid (bridge is fresher)", r.sid, "vs", st.pageSid);
+          }
+        } else {
+          st.pageSid = r.sid;
+          st.pageSidSource = "fetch";
+          st.pageSidAt = Date.now();
+          st.dirty = true;
+          await refresh(st, { force: true });
+        }
       }
     } catch {}
   }
@@ -470,7 +610,9 @@ function noteModelCall(st, props) {
   while (list.length > 6) list.shift();
   st.rates.set(sid, list);
   addModelCall(sid, out, latency, ttft, decodeMs);
-  st.dirty = true;
+  /* 一次模型调用结束 = 库里有新的 step 数据，缓存要失效；
+     但 dirty 不在这里置位：TTFT/TPS 走的是 rates，不需要重查库。 */
+  invalidateStats(sid);
 }
 
 /* TPS 取值链：实时采样 → 自己记的解码速度 → 总输出/模型总耗时（近似） */
@@ -508,15 +650,19 @@ function sidByTitle(st, texts) {
   const key = texts.join("|");
   if (st.titleCache && st.titleCache.key === key) return st.titleCache.sid;
   let sid = null;
-  for (const text of texts) {
-    if (typeof text !== "string" || !text.trim()) continue;
-    try {
-      const row = db.prepare(Q_TITLE).get(text.trim());
+  try {
+    const q = stmts().title;
+    for (const text of texts) {
+      if (typeof text !== "string" || !text.trim()) continue;
+      const row = q.get(text.trim());
       if (row && row.id) {
         sid = row.id;
         break;
       }
-    } catch {}
+    }
+  } catch (err) {
+    resetPrepared();
+    log("title lookup failed", String(err?.message || err));
   }
   st.titleCache = { key, sid };
   return sid;
@@ -535,8 +681,9 @@ function recentSid(st) {
   if (st.recentSidCache && now - st.recentSidCache.at < 5000) return st.recentSidCache.sid;
   let sid = null;
   try {
-    sid = db?.prepare(Q_RECENT).get()?.id ?? null;
+    sid = stmts().recent.get()?.id ?? null;
   } catch (err) {
+    resetPrepared();
     log("recent sid failed", String(err?.message || err));
   }
   st.recentSidCache = { at: now, sid };
@@ -544,6 +691,10 @@ function recentSid(st) {
 }
 
 async function refresh(st, { force = false } = {}) {
+  /* 数据库可能还没生成（首启）或 app 升级后路径变了：每次刷新顺手补一次，
+     openDb 内部有 5s 退避，不会真的每 400ms 撞盘。 */
+  if (!db) await openDb();
+
   const sid = displaySid(st);
   if (!sid) {
     /* 没有会话：推空载荷，让前端整条隐藏 */
@@ -556,9 +707,15 @@ async function refresh(st, { force = false } = {}) {
   if (st.lastPushedSid !== sid) st.lastPushedSid = sid;
   const approx = !st.pageSid;
 
+  /* 节流：库没被写过、也没有活跃的实时速率，就没必要推 IPC。
+     dirty 只在「库会变」的事件里置位，所以这里能让流式期间
+     真正跳过大部分查询（TPS 抖动仍由 currentRate 兜住）。 */
   if (!force && !st.dirty && !currentRate(st, sid) && Date.now() - st.lastPush < 2500) return;
   st.dirty = false;
   st.lastPush = Date.now();
+
+  /* 切会话 / 强制刷新时丢掉缓存，确保看到的是最新数字 */
+  if (force) invalidateStats(sid);
 
   const stats = readSessionStats(sid);
   const payload = stats
@@ -574,7 +731,8 @@ async function refresh(st, { force = false } = {}) {
       };
   const tps = pickTps(st, sid, payload);
   payload.currency = st.currency;
-  payload.costCny = st.showCny && payload.cost ? payload.cost * st.fx : null;
+  /* costCny 为 null 表示「不换算」，overlay 会退回显示 cost 原值 */
+  payload.costCny = st.showCny && payload.cost != null ? payload.cost * st.fx : null;
   payload.busy = !!st.busy.get(sid);
   payload.tokPerSec = tps.value;
   payload.tokPerSecApprox = tps.approx;
@@ -628,6 +786,11 @@ function maybeSid(st, api, args) {
     st.sidDebug = api;
     log("sid via", api, sid);
   }
+  /* 桥信号是权威信号：即使 sid 没变也要刷新时间戳，
+     这样 fetch 兜底才知道「桥还活着」，不会把页面顶到别的会话去。 */
+  st.pageSidAt = Date.now();
+  st.pageSidSource = "bridge";
+  st.fetchIgnored = false;
   if (sid === st.pageSid) return;
   st.pageSid = sid;
   st.dirty = true;
@@ -668,17 +831,59 @@ function installBridgeHook(st, bridge) {
   log("bridge hooked", { handlers: map ? map.size : 0 });
 }
 
+/* 只读文件头部就够了：桥的 API 名常量一定在模块前部，
+   没必要把几十上百个 mjs 整个读进内存。 */
+const BRIDGE_HEAD_BYTES = 64 * 1024;
+const BRIDGE_MARKER = "mimo:bridge:invoke";
+
+function fileHeadContains(file, needle) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(BRIDGE_HEAD_BYTES);
+    const read = fs.readSync(fd, buf, 0, BRIDGE_HEAD_BYTES, 0);
+    return buf.subarray(0, read).includes(needle);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+function fileContains(file, needle) {
+  try {
+    return fs.readFileSync(file, "utf8").includes(needle);
+  } catch {
+    return false;
+  }
+}
+
 async function findBridgeModule() {
   const base = path.join(appDataRoot(), "runtime-res", "releases", "main");
   if (!fs.existsSync(base)) return null;
-  const files = fs.readdirSync(base).filter((f) => f.endsWith(".mjs"));
+  let files;
+  try {
+    files = fs.readdirSync(base).filter((f) => f.endsWith(".mjs"));
+  } catch (err) {
+    log("runtime dir unreadable", String(err?.message || err));
+    return null;
+  }
   const direct = files.find((f) => /^canvas-client~.*\.mjs$/.test(f));
   if (direct) return path.join(base, direct);
+
+  /* 先只扫每个文件的头部（覆盖 99% 情况，启动快得多） */
   for (const f of files) {
-    try {
-      const head = fs.readFileSync(path.join(base, f), "utf8");
-      if (head.includes("mimo:bridge:invoke")) return path.join(base, f);
-    } catch {}
+    const full = path.join(base, f);
+    if (fileHeadContains(full, BRIDGE_MARKER)) return full;
+  }
+  /* 头部没命中再退回全文扫描，保证行为和旧版一致（不漏） */
+  for (const f of files) {
+    const full = path.join(base, f);
+    if (fileContains(full, BRIDGE_MARKER)) return full;
   }
   return null;
 }
@@ -784,6 +989,12 @@ async function boot(st) {
   st.tickTimer = setInterval(() => {
     refresh(st).catch(() => {});
   }, TICK_MS);
+  if (st.pollTimer.unref) st.pollTimer.unref();
+  if (st.tickTimer.unref) st.tickTimer.unref();
+
+  /* 退出前把缓冲的日志落盘，别丢最后几行（排查问题最需要的往往是它） */
+  e.app.on("before-quit", flushLog);
+  e.app.on("will-quit", flushLog);
 
   log("booted", {
     plugin: VERSION,
@@ -793,6 +1004,7 @@ async function boot(st) {
     logDir: logRoot(),
     db: dbPath,
   });
+  flushLog();
 }
 
 /* ------------------------------------------------------------------ 插件导出 */
@@ -835,6 +1047,8 @@ export default async function mimoMeter(input, options) {
           const partType = props?.part?.type;
           if (role === "user" || role === "assistant") st.busy.set(sid, true);
           if (partType === "step-finish" || partType === "step-start") st.busy.set(sid, true);
+          /* 这两类事件意味着库真的被写了，统计缓存必须失效 */
+          invalidateStats(sid);
           if (sid === displaySid(st)) st.dirty = true;
           return;
         }
@@ -842,6 +1056,7 @@ export default async function mimoMeter(input, options) {
           const sid = sidOf(props);
           if (sid) {
             st.busy.set(sid, false);
+            invalidateStats(sid);
             if (sid === displaySid(st)) st.dirty = true;
           }
           return;
