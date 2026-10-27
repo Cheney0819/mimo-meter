@@ -155,6 +155,23 @@ function makeSynthetic() {
 
 /* ---------- 主流程 ---------- */
 let database, cleanup = null, source;
+
+/* Windows 上必须先关掉数据库句柄才能删文件，否则 EBUSY。
+   所有退出路径都走这里。 */
+function shutdown() {
+  try { if (database) database.close(); } catch {}
+  database = null;
+  if (cleanup) {
+    try { fs.rmSync(cleanup, { recursive: true, force: true }); } catch {}
+    /* 删不掉说明还有句柄没释放（Windows 上会 EBUSY）。
+       这里不抛错，但要明确报出来，否则 CI 只会看到莫名其妙的退出码。 */
+    if (fs.existsSync(cleanup)) {
+      console.error("警告：临时目录未能删除（可能有未关闭的数据库句柄）：" + cleanup);
+    }
+    cleanup = null;
+  }
+}
+
 if (realDb && !synthetic) {
   database = new DatabaseSync(realDb, { readOnly: true });
   source = realDb;
@@ -170,7 +187,7 @@ console.log("测试库：" + source);
 const sessions = database.prepare("SELECT id, title FROM session").all();
 if (!sessions.length) {
   console.error("库里没有会话，无法比对");
-  if (cleanup) fs.rmSync(cleanup, { recursive: true, force: true });
+  shutdown();
   process.exit(2);
 }
 
@@ -209,7 +226,7 @@ for (const s of sessions) {
   }
 }
 
-if (cleanup) fs.rmSync(cleanup, { recursive: true, force: true });
+shutdown();
 
 console.log("");
 if (fails) {

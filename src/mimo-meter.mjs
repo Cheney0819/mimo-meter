@@ -319,6 +319,17 @@ function stmts() {
  */
 
 const statsCache = new Map(); // sid -> stats
+
+/* 退出或重开时释放句柄。只读连接不关一般不出事，但 Windows 上会挡住
+   用户重装（Copy-Item 失败）或删除数据库。 */
+function closeDb() {
+  try {
+    if (db) db.close();
+  } catch {}
+  db = null;
+  resetPrepared();
+  statsCache.clear();
+}
 const STATS_CACHE_MAX = 8;
 
 function readSessionStats(sid) {
@@ -992,9 +1003,14 @@ async function boot(st) {
   if (st.pollTimer.unref) st.pollTimer.unref();
   if (st.tickTimer.unref) st.tickTimer.unref();
 
-  /* 退出前把缓冲的日志落盘，别丢最后几行（排查问题最需要的往往是它） */
-  e.app.on("before-quit", flushLog);
-  e.app.on("will-quit", flushLog);
+  /* 退出前把缓冲的日志落盘，别丢最后几行（排查问题最需要的往往是它），
+     同时关掉数据库句柄：Windows 上留着只读句柄会挡住用户重装或删库。 */
+  function onQuit() {
+    flushLog();
+    closeDb();
+  }
+  e.app.on("before-quit", onQuit);
+  e.app.on("will-quit", onQuit);
 
   log("booted", {
     plugin: VERSION,
