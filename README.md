@@ -102,10 +102,19 @@ env -u ELECTRON_RUN_AS_NODE open -a 'Xiaomi MiMo'
 
 **Windows**（PowerShell 5.1+）
 
+在**仓库目录里打开 PowerShell 窗口**执行（不要直接双击 `.ps1`）：
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 # 然后从托盘图标右键完全退出 MiMo，再从开始菜单重新打开
 ```
+
+> [!IMPORTANT]
+> **不要双击 `install.ps1`**。双击时脚本跑完窗口会立刻关闭，
+> 出错信息一闪而过，看起来就是「闪退」。
+> 如果已经双击了，脚本检测到双击启动时会在出错后停住等你按回车。
+>
+> 想看得更清楚，可以先 `cd` 到仓库目录，再执行上面的命令。
 
 **3. 验证**
 
@@ -165,6 +174,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge    # 连日志�
 | `booted {"platform":"win32",...}` | 插件加载成功 |
 | `bridge module not found` | runtime 目录结构变化，请附日志提 issue |
 | 完全没有日志文件 | 插件没被加载，检查 `mimocode.jsonc` 里的 `file://` 路径 |
+| 脚本报错里全是乱码 | `.ps1` 文件缺少 UTF-8 BOM（PowerShell 5.1 会按 GBK 解码）。请用仓库原版文件 |
 
 另外确认 `%APPDATA%\Xiaomi MiMo\engine-config` 存在（说明 userData 路径正确）。
 

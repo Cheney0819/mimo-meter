@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   mimocode.jsonc 的稳健读写工具（Windows 侧，install.ps1 / uninstall.ps1 共用）
 

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   jsonc_edit.ps1 的回归测试（与 scripts/test_jsonc_edit.py 的用例对齐）
 
