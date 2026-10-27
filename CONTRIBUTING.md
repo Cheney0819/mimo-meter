@@ -3,7 +3,7 @@
 ## 结构
 
 ```
-src/mimo-stats.mjs    引擎插件（跑在 MiMo 的 Electron 主进程里）
+src/mimo-meter.mjs    引擎插件（跑在 MiMo 的 Electron 主进程里）
 src/overlay.js        注入渲染进程的浮层逻辑
 src/overlay.css       浮层样式
 install.sh / uninstall.sh      macOS / Linux
@@ -21,13 +21,13 @@ install.ps1 / uninstall.ps1    Windows
    ```
 3. 看日志确认加载成功：
    ```bash
-   tail -5 ~/Library/Logs/Xiaomi MiMo\ Stats/mimo-stats.log
+   tail -5 ~/Library/Logs/Xiaomi MiMo\ Stats/mimo-meter.log
    ```
    应包含 `booted {"plugin":"x.y.z","overlay":"x.y.z","platform":"darwin",...}`
 
 ## 版本号规则
 
-`src/mimo-stats.mjs` 的 `const VERSION` 与 `src/overlay.js` 的 `var VERSION`
+`src/mimo-meter.mjs` 的 `const VERSION` 与 `src/overlay.js` 的 `var VERSION`
 **必须保持一致**。不一致时浮层不会重新挂载，日志里也会暴露出来。
 
 ## 数据口径（改动前务必理解）
@@ -43,7 +43,7 @@ total = input + output + reasoning + cache.read + cache.write
 ## 提交前检查
 
 ```bash
-node --check src/mimo-stats.mjs
+node --check src/mimo-meter.mjs
 node --check src/overlay.js
 bash -n install.sh
 ```

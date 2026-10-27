@@ -1,4 +1,4 @@
-# mimo-stats
+# mimo-meter
 
 **给 MiMo Desktop 加一条 Token / 步数 / 缓存命中 / 费用的常驻状态栏。**
 
@@ -20,12 +20,12 @@ MIT License · 无遥测 · 不上传任何数据 · 只读本地数据库
    IPC 桥 ───────────┐
    mimo:sessionMessages ─► 取当前会话 sid（主进程 hook handler 注册表）
    ──────────────────┐
-   引擎事件总线 ─────► │  mimo-stats.mjs (主进程)
+   引擎事件总线 ─────► │  mimo-meter.mjs (主进程)
    message.updated     │  · 400ms 合并刷新
    part.updated        │  · 读 mimocode.db 按 session_id 算总量
    metrics.model_call  │  · insertCSS + executeJavaScript
    session.idle        └───────────┬──────────────────┘
-                                   │ window.__MIMO_STATS__.update(payload)
+                                   │ window.__MIMO_METER__.update(payload)
                      ┌─────────────▼─────────────────┐
                      │  overlay.js / overlay.css      │
                      │  底栏状态条 + 明细卡片          │
@@ -58,7 +58,7 @@ MIT License · 无遥测 · 不上传任何数据 · 只读本地数据库
 | 用途 | macOS | Windows |
 | --- | --- | --- |
 | Electron userData（`engine-config`、`runtime-res`） | `~/Library/Application Support/Xiaomi MiMo` | `%APPDATA%\Xiaomi MiMo` |
-| 我们的日志/指标 | `~/Library/Logs/Xiaomi MiMo Stats` | `%LOCALAPPDATA%\Xiaomi MiMo Stats` |
+| 我们的日志/指标 | `~/Library/Logs/mimo-meter` | `%LOCALAPPDATA%\mimo-meter` |
 | 引擎数据库 | `~/.local/share/mimocode/mimocode.db` | `%LOCALAPPDATA%\mimocode\mimocode.db`（另有 `%USERPROFILE%\.local\share\mimocode\` 等候选） |
 | 字体 | SF / PingFang | Segoe UI / 微软雅黑（已加进字体栈） |
 
@@ -88,7 +88,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ### Windows 上第一次装的验证清单
 
 1. `%APPDATA%\Xiaomi MiMo\engine-config` 存在 → 说明 userData 路径对上了。
-2. 重启后看 `%LOCALAPPDATA%\Xiaomi MiMo Stats\mimo-stats.log`：
+2. 重启后看 `%LOCALAPPDATA%\mimo-meter\mimo-meter.log`：
    - 有 `db opened ...` → 数据库路径对上了；
    - 有 `bridge hooked {handlers:252}` → 桥拦截成功；
    - 有 `booted` → 插件加载成功。
@@ -210,7 +210,7 @@ hook 了 IPC 桥的 handler 注册表，抓这两个调用：
 显示可配（`mimocode.jsonc` 的插件 options）：
 
 ```json
-[["file:///.../mimo-stats.mjs", { "currency": "$", "fx": 7.142857, "showCny": true }]]
+[["file:///.../mimo-meter.mjs", { "currency": "$", "fx": 7.142857, "showCny": true }]]
 ```
 
 - `currency`：`costCny` 拿不到时的兜底符号（默认 `¥`）
@@ -241,13 +241,13 @@ mimo-v2.6-flash
 
 **TTFT / TPS 为什么可能是 `—`**：引擎只在 `metrics.model_call` 事件里给 `ttft_ms` /
 `latency_ms`，**不写库**，历史会话无法反推。所以插件自己按会话累计到
-`~/Library/Logs/Xiaomi MiMo Stats/metrics.json`（`calls / out / latency / ttft / decode`，
+`~/Library/Logs/mimo-meter/metrics.json`（`calls / out / latency / ttft / decode`，
 最多 200 个会话）。装上之后跑过的会话才有这两项，跑一次就填上。
 
 ## 文件
 
 ```
-src/mimo-stats.mjs          引擎插件（主进程）：事件订阅 / DB 统计 / 注入与推送
+src/mimo-meter.mjs          引擎插件（主进程）：事件订阅 / DB 统计 / 注入与推送
 src/overlay.js              渲染进程浮层逻辑（幂等注入，含拖拽、开合、主题跟随）
 src/overlay.css             浮层样式（浅色/深色双主题，跟随 <html data-theme>）
 install.sh / uninstall.sh   安装 / 卸载
@@ -256,20 +256,20 @@ install.sh / uninstall.sh   安装 / 卸载
 安装后落点：
 
 ```
-~/Library/Application Support/Xiaomi MiMo/engine-config/mimo-stats.mjs
-~/Library/Application Support/Xiaomi MiMo/engine-config/mimo-stats-overlay.js
-~/Library/Application Support/Xiaomi MiMo/engine-config/mimo-stats-overlay.css
+~/Library/Application Support/Xiaomi MiMo/engine-config/mimo-meter.mjs
+~/Library/Application Support/Xiaomi MiMo/engine-config/mimo-meter-overlay.js
+~/Library/Application Support/Xiaomi MiMo/engine-config/mimo-meter-overlay.css
 ~/Library/Application Support/Xiaomi MiMo/engine-config/mimocode.jsonc   ← plugin 数组登记
 ```
 
-运行日志：`~/Library/Logs/Xiaomi MiMo Stats/mimo-stats.log`
-指标缓存：`~/Library/Logs/Xiaomi MiMo Stats/metrics.json`（TTFT / TPS，删掉只是回到 `—`）
+运行日志：`~/Library/Logs/mimo-meter/mimo-meter.log`
+指标缓存：`~/Library/Logs/mimo-meter/metrics.json`（TTFT / TPS，删掉只是回到 `—`）
 
 ## 排错
 
 | 现象 | 原因 / 处理 |
 | --- | --- |
-| 胶囊不出现 | 看 `mimo-stats.log` 是否有 `booted`；没有就是插件没被加载，检查 jsonc 里 `plugin` 的 file:// URL 是否被 URL 编码 |
+| 胶囊不出现 | 看 `mimo-meter.log` 是否有 `booted`；没有就是插件没被加载，检查 jsonc 里 `plugin` 的 file:// URL 是否被 URL 编码 |
 | 胶囊显示「Token 用量」不变 | 没有活跃会话（DB 里也没有历史会话）；随便开一个会话即可 |
 | 数字不动 | 引擎侧写库有延迟，正常；卡片 400ms 合并刷新，最多滞后半秒 |
 | 想彻底停用 | `./uninstall.sh` + 重启；或只把 jsonc 里那一项注释掉 |
@@ -345,7 +345,7 @@ install.sh / uninstall.sh   安装 / 卸载
 | --- | --- |
 | `engine-config/` 下 3 个文件 | 插件本体 |
 | `engine-config/mimocode.jsonc` | 追加一条 plugin 登记（保留你已有的条目） |
-| 日志目录 `mimo-stats.log` | 运行日志（只含路径与事件名，不含对话内容） |
+| 日志目录 `mimo-meter.log` | 运行日志（只含路径与事件名，不含对话内容） |
 | 日志目录 `metrics.json` | 每个会话的 TTFT / 解码速度累计值 |
 
 删掉这些文件 + 重启应用即完全还原，`./uninstall.sh` / `uninstall.ps1` 会代劳。

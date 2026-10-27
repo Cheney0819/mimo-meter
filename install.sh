@@ -1,10 +1,10 @@
 #!/bin/bash
-# mimo-stats 安装器 —— 把统计浮层装进 MiMo Desktop
+# mimo-meter 安装器 —— 把统计浮层装进 MiMo Desktop
 #
 # 安装位置：~/Library/Application Support/Xiaomi MiMo/engine-config/
-#   mimo-stats.mjs            引擎插件（跑在 Electron 主进程里）
-#   mimo-stats-overlay.js     注入渲染进程的浮层逻辑
-#   mimo-stats-overlay.css    浮层样式
+#   mimo-meter.mjs            引擎插件（跑在 Electron 主进程里）
+#   mimo-meter-overlay.js     注入渲染进程的浮层逻辑
+#   mimo-meter-overlay.css    浮层样式
 # 登记位置：engine-config/mimocode.jsonc 的 plugin 数组（app 不会改写这个文件）
 #
 # 不改 app.asar、不改 runtime 文件、不动代码签名。
@@ -20,12 +20,12 @@ if [ ! -d "$CFG" ]; then
   exit 1
 fi
 
-VER=$(grep -o 'const VERSION = "[^"]*"' "$SRC/mimo-stats.mjs" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-echo "安装 mimo-stats v${VER:-unknown}"
+VER=$(grep -o 'const VERSION = "[^"]*"' "$SRC/mimo-meter.mjs" | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+echo "安装 mimo-meter v${VER:-unknown}"
 
-cp "$SRC/mimo-stats.mjs"          "$CFG/mimo-stats.mjs"
-cp "$SRC/overlay.js"              "$CFG/mimo-stats-overlay.js"
-cp "$SRC/overlay.css"             "$CFG/mimo-stats-overlay.css"
+cp "$SRC/mimo-meter.mjs"          "$CFG/mimo-meter.mjs"
+cp "$SRC/overlay.js"              "$CFG/mimo-meter-overlay.js"
+cp "$SRC/overlay.css"             "$CFG/mimo-meter-overlay.css"
 echo "已复制 3 个文件到 engine-config/"
 
 python3 - "$CFG" <<'PY'
@@ -48,8 +48,9 @@ plugins = data.get("plugin") or []
 if not isinstance(plugins, list):
     plugins = []
 
-spec = "file://" + urllib.parse.quote(os.path.join(cfg, "mimo-stats.mjs"))
-plugins = [p for p in plugins if "mimo-stats" not in str(p)]
+spec = "file://" + urllib.parse.quote(os.path.join(cfg, "mimo-meter.mjs"))
+# 同时清掉旧名（mimo-stats）与本名，保证从任何旧版本升级都干净
+plugins = [p for p in plugins if "mimo-meter" not in str(p) and "mimo-stats" not in str(p)]
 plugins.append([spec, {}])
 data["plugin"] = plugins
 data.setdefault("$schema", "https://mimo.xiaomi.com/mimocode/config.json")

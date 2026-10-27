@@ -1,32 +1,32 @@
-/* mimo-stats overlay —— 注入 MiMo 渲染进程的统计浮层
+/* mimo-meter overlay —— 注入 MiMo 渲染进程的统计浮层
  *
  * 两种形态：
  *   inline —— 优先：绝对定位嵌进 .composer-wrap，与「内容由 AI 生成」同一行，
  *             右边一段「2 轮 165 步 · 191 tok/s | 69.6M tok · 缓存命中 99%」。
  *   float  —— 兜底：找不到 composer 时退回右下角胶囊。
  *
- * 由 engine-config/mimo-stats.mjs 通过 webContents.executeJavaScript 注入；
+ * 由 engine-config/mimo-meter.mjs 通过 webContents.executeJavaScript 注入；
  * 幂等：重复注入只刷新版本，不堆 DOM。
  */
 (function () {
-  var VERSION = "1.7.2";
-  var HOST_ID = "mimo-stats-host";
+  var VERSION = "2.0.0";
+  var HOST_ID = "mimo-meter-host";
 
-  var prev = window.__MIMO_STATS__;
+  var prev = window.__MIMO_METER__;
   if (prev && prev.version === VERSION && document.getElementById(HOST_ID)) return;
 
   /* ---------------- 会话 id 捕获（备用信号；主信号在主进程桥拦截里） ---------------- */
-  if (!window.__mimoStatsFetchPatched) {
-    window.__mimoStatsFetchPatched = true;
+  if (!window.__mimoMeterFetchPatched) {
+    window.__mimoMeterFetchPatched = true;
     var origFetch = window.fetch;
     if (typeof origFetch === "function") {
       window.fetch = function (input) {
         try {
           var url = typeof input === "string" ? input : (input && input.url) || "";
           var m = /\/session\/([A-Za-z0-9_\-]+)/.exec(url);
-          if (m && m[1] && m[1] !== window.__mimoStatsSid) {
-            window.__mimoStatsSid = m[1];
-            var api = window.__MIMO_STATS__;
+          if (m && m[1] && m[1] !== window.__mimoMeterSid) {
+            window.__mimoMeterSid = m[1];
+            var api = window.__MIMO_METER__;
             if (api && api.onSid) api.onSid(m[1]);
           }
         } catch (e) {}
@@ -100,23 +100,23 @@
   host.dataset.mode = "float";
 
   /* --- 卡片 --- */
-  var panel = el("div", "ms-panel");
+  var panel = el("div", "mm-panel");
   panel.setAttribute("role", "dialog");
   panel.setAttribute("aria-label", "Token 用量");
 
-  var head = el("div", "ms-head");
-  head.appendChild(el("span", "ms-ico", "◈"));
-  head.appendChild(el("span", "ms-title", "Token 用量"));
-  var totalEl = el("span", "ms-total", "—");
+  var head = el("div", "mm-head");
+  head.appendChild(el("span", "mm-ico", "◈"));
+  head.appendChild(el("span", "mm-title", "Token 用量"));
+  var totalEl = el("span", "mm-total", "—");
   head.appendChild(totalEl);
 
-  var subEl = el("div", "ms-sub", "");
-  var rule1 = el("div", "ms-rule");
+  var subEl = el("div", "mm-sub", "");
+  var rule1 = el("div", "mm-rule");
 
   function row(label) {
-    var r = el("div", "ms-row");
-    r.appendChild(el("span", "ms-k", label));
-    var v = el("span", "ms-v", "—");
+    var r = el("div", "mm-row");
+    r.appendChild(el("span", "mm-k", label));
+    var v = el("span", "mm-v", "—");
     r.appendChild(v);
     panel.appendChild(r);
     return { row: r, v: v };
@@ -132,20 +132,20 @@
   var rOut = row("输出");
   var rRea = row("推理（含在总量）");
 
-  panel.appendChild(el("div", "ms-rule"));
-  var foot = el("div", "ms-foot");
-  var footLeft = el("span", "ms-foot-l", "—");
-  var footRight = el("span", "ms-foot-r", "—");
+  panel.appendChild(el("div", "mm-rule"));
+  var foot = el("div", "mm-foot");
+  var footLeft = el("span", "mm-foot-l", "—");
+  var footRight = el("span", "mm-foot-r", "—");
   foot.appendChild(footLeft);
   foot.appendChild(footRight);
   panel.appendChild(foot);
-  var costLine = el("div", "ms-cost", "");
+  var costLine = el("div", "mm-cost", "");
   panel.appendChild(costLine);
 
-  panel.appendChild(el("div", "ms-rule"));
-  var head2 = el("div", "ms-head ms-head2");
-  head2.appendChild(el("span", "ms-ico", "◈"));
-  head2.appendChild(el("span", "ms-title", "会话统计"));
+  panel.appendChild(el("div", "mm-rule"));
+  var head2 = el("div", "mm-head mm-head2");
+  head2.appendChild(el("span", "mm-ico", "◈"));
+  head2.appendChild(el("span", "mm-title", "会话统计"));
   panel.appendChild(head2);
   var tModel = row("模型用时");
   var tTool = row("工具调用用时");
@@ -153,34 +153,34 @@
   var tTps = row("输出速度（TPS）");
 
   /* --- 底栏内嵌条 --- */
-  var bar = el("div", "ms-bar");
+  var bar = el("div", "mm-bar");
   bar.setAttribute("role", "button");
   bar.setAttribute("tabindex", "0");
   bar.setAttribute("aria-expanded", "false");
   bar.title = "Token 用量 / 步数 / 缓存命中（点击或 ⌥⌘T 展开）";
 
-  var segRounds = el("span", "ms-seg");
+  var segRounds = el("span", "mm-seg");
   segRounds.appendChild(svg(["M8 2.4a5.6 5.6 0 1 0 0 11.2A5.6 5.6 0 0 0 8 2.4z", "M8 5v3.2l2.2 1.4"]));
-  var roundsTxt = el("span", "ms-seg-t", "—");
+  var roundsTxt = el("span", "mm-seg-t", "—");
   segRounds.appendChild(roundsTxt);
 
-  var segTok = el("span", "ms-seg");
+  var segTok = el("span", "mm-seg");
   segTok.appendChild(svg(["M2.9 4.1c0-1.1 2.3-2 5.1-2s5.1.9 5.1 2-2.3 2-5.1 2-5.1-.9-5.1-2z", "M2.9 4.1v7.4c0 1.1 2.3 2 5.1 2s5.1-.9 5.1-2V4.1", "M2.9 7.8c0 1.1 2.3 2 5.1 2s5.1-.9 5.1-2"]));
-  var tokTxt = el("span", "ms-seg-t", "—");
+  var tokTxt = el("span", "mm-seg-t", "—");
   segTok.appendChild(tokTxt);
 
-  var approxTag = el("span", "ms-approx", "最近");
+  var approxTag = el("span", "mm-approx", "最近");
 
   segRounds.insertBefore(approxTag, segRounds.firstChild);
   bar.appendChild(segRounds);
   bar.appendChild(segTok);
 
   /* --- 兜底胶囊 --- */
-  var chip = el("button", "ms-chip");
+  var chip = el("button", "mm-chip");
   chip.type = "button";
   chip.title = bar.title;
-  var dot = el("span", "ms-dot");
-  var chipText = el("span", "ms-chip-text", "Token 用量");
+  var dot = el("span", "mm-dot");
+  var chipText = el("span", "mm-chip-text", "Token 用量");
   chip.appendChild(dot);
   chip.appendChild(chipText);
 
@@ -389,7 +389,7 @@
   function setOpen(v) {
     state.open = !!v;
     if (state.open) placePanel();
-    host.classList.toggle("ms-open", state.open);
+    host.classList.toggle("mm-open", state.open);
     bar.setAttribute("aria-expanded", state.open ? "true" : "false");
     chip.setAttribute("aria-expanded", state.open ? "true" : "false");
   }
@@ -440,7 +440,7 @@
   }, true);
 
   /* 拖动（仅 float 形态） */
-  var POS_KEY = "mimo.stats.pos.v2";
+  var POS_KEY = "mimo.meter.pos.v2";
   try {
     var saved = JSON.parse(localStorage.getItem(POS_KEY) || "null");
     if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
@@ -527,17 +527,17 @@
     else host.removeAttribute("data-theme");
 
     if (!d || !d.sid) {
-      host.classList.add("ms-idle");
-      host.classList.remove("ms-busy");
+      host.classList.add("mm-idle");
+      host.classList.remove("mm-busy");
       if (state.open) setOpen(false);
       return;
     }
-    host.classList.remove("ms-idle");
+    host.classList.remove("mm-idle");
 
     var t = d.tokens || {};
     var total = t.total || 0;
     var rate = t.read != null && t.read + (t.input || 0) > 0 ? t.read / (t.read + (t.input || 0)) : null;
-    host.classList.toggle("ms-busy", !!d.busy);
+    host.classList.toggle("mm-busy", !!d.busy);
     approxTag.style.display = d.approx ? "" : "none";
 
     /* 底栏文案两档：宽松版放不下就切紧凑版（去图标 / 去空格 / 去「命中」） */
@@ -559,20 +559,20 @@
     /* 三档：宽松 → 紧凑（去图标/去空格）→ 极简（只留步数+命中率） */
     var tiers = [
       { cls: "", left: fullLeftTxt, right: fullRightTxt },
-      { cls: "ms-compact", left: tightLeftTxt, right: tightRightTxt },
+      { cls: "mm-compact", left: tightLeftTxt, right: tightRightTxt },
       {
-        cls: "ms-compact",
+        cls: "mm-compact",
         left: (d.steps ? d.steps + "步" : String(d.rounds || 0) + "轮") + (speed ? " · " + speed : ""),
         right: rate != null ? pct(rate) : compact(total),
       },
       {
-        cls: "ms-compact",
+        cls: "mm-compact",
         left: d.steps ? d.steps + "步" : "",
         right: rate != null ? pct(rate) : compact(total),
       },
     ];
     for (var ti = 0; ti < tiers.length; ti++) {
-      host.classList.toggle("ms-compact", !!tiers[ti].cls);
+      host.classList.toggle("mm-compact", !!tiers[ti].cls);
       roundsTxt.textContent = tiers[ti].left || "—";
       tokTxt.textContent = tiers[ti].right || "";
       fitBar();
@@ -622,7 +622,7 @@
   }
 
   /* ---------------- 对外 API ---------------- */
-  window.__MIMO_STATS__ = {
+  window.__MIMO_METER__ = {
     version: VERSION,
     update: function (payload) {
       try {
@@ -637,7 +637,7 @@
     probe: function () {
       return {
         version: VERSION,
-        sid: window.__mimoStatsSid || null,
+        sid: window.__mimoMeterSid || null,
         view: currentView(),
         headerTexts: headerTexts(),
         open: state.open,

@@ -1,4 +1,4 @@
-// mimo-stats.mjs — MiMo Desktop 「Token 用量 / 步数 / 缓存命中」浮层插件
+// mimo-meter.mjs — MiMo Desktop 「Token 用量 / 步数 / 缓存命中」浮层插件
 //
 // 挂载方式：在 engine-config/mimocode.jsonc 的 plugin 数组里登记本文件（file:// URL）。
 // 运行位置：引擎被 desktop 主进程直接 import（runtime-res/releases/main/main~*.mjs），
@@ -11,7 +11,7 @@
 //   2. 实时：hook.event 订阅引擎总线（message.updated、message.part.updated、
 //      metrics.model_call、session.idle…），脏标记 + 400ms 合并刷新。
 //   3. UI：webContents.insertCSS + executeJavaScript 往窗口里注入浮层，
-//      再用 window.__MIMO_STATS__.update(payload) 推数据。
+//      再用 window.__MIMO_METER__.update(payload) 推数据。
 //
 // 不改 app.asar、不改 runtime 文件、不动代码签名；卸载 = 删本文件 + 从 jsonc 移除登记。
 import fs from "node:fs";
@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const VERSION = "1.7.2";
+const VERSION = "2.0.0";
 const TICK_MS = 400;
 const SID_POLL_MS = 900;
 
@@ -38,12 +38,12 @@ function appDataRoot() {
 /* 我们自己的日志/指标目录 */
 function logRoot() {
   if (PLATFORM === "win32") {
-    return path.join(process.env.LOCALAPPDATA || path.join(HOME, "AppData", "Local"), "Xiaomi MiMo Stats");
+    return path.join(process.env.LOCALAPPDATA || path.join(HOME, "AppData", "Local"), "mimo-meter");
   }
-  if (PLATFORM === "darwin") return path.join(HOME, "Library", "Logs", "Xiaomi MiMo Stats");
-  return path.join(process.env.XDG_STATE_HOME || path.join(HOME, ".local", "state"), "mimo-stats");
+  if (PLATFORM === "darwin") return path.join(HOME, "Library", "Logs", "mimo-meter");
+  return path.join(process.env.XDG_STATE_HOME || path.join(HOME, ".local", "state"), "mimo-meter");
 }
-const LOG_FILE = path.join(logRoot(), "mimo-stats.log");
+const LOG_FILE = path.join(logRoot(), "mimo-meter.log");
 
 function log(...args) {
   try {
@@ -127,8 +127,8 @@ function addModelCall(sid, out, latencyMs, ttftMs, decodeMs) {
   saveMetricsSoon();
 }
 
-const overlayJsPath = () => safePath("./mimo-stats-overlay.js");
-const overlayCssPath = () => safePath("./mimo-stats-overlay.css");
+const overlayJsPath = () => safePath("./mimo-meter-overlay.js");
+const overlayCssPath = () => safePath("./mimo-meter-overlay.css");
 
 function safePath(rel) {
   try {
@@ -299,7 +299,7 @@ function num(v) {
 
 /* ------------------------------------------------------------------ 全局状态 */
 
-const GLOBAL_KEY = "__MIMO_STATS_ENGINE__";
+const GLOBAL_KEY = "__MIMO_METER_ENGINE__";
 
 function engineState() {
   if (globalThis[GLOBAL_KEY]) return globalThis[GLOBAL_KEY];
@@ -402,7 +402,7 @@ async function injectAll(st) {
 async function pushPayload(st, payload) {
   const e = st.electron;
   if (!e) return;
-  const js = `window.__MIMO_STATS__ && window.__MIMO_STATS__.update(${JSON.stringify(payload)});`;
+  const js = `window.__MIMO_METER__ && window.__MIMO_METER__.update(${JSON.stringify(payload)});`;
   for (const win of e.BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
     if (!isAppWindow(win)) continue;
@@ -421,7 +421,7 @@ async function pollSid(st) {
     if (win.isDestroyed() || !isAppWindow(win)) continue;
     try {
       const r = await win.webContents.executeJavaScript(
-        "window.__MIMO_STATS__ ? window.__MIMO_STATS__.probe() : null",
+        "window.__MIMO_METER__ ? window.__MIMO_METER__.probe() : null",
         true,
       );
       if (!r || !r.mounted) {
@@ -636,8 +636,8 @@ function maybeSid(st, api, args) {
 }
 
 function installBridgeHook(st, bridge) {
-  if (!bridge || bridge.__mimoStatsHooked) return;
-  bridge.__mimoStatsHooked = true;
+  if (!bridge || bridge.__mimoMeterHooked) return;
+  bridge.__mimoMeterHooked = true;
 
   const wrap = (api, fn) =>
     function (event, ...args) {
@@ -797,7 +797,7 @@ async function boot(st) {
 
 /* ------------------------------------------------------------------ 插件导出 */
 
-export default async function mimoStats(input, options) {
+export default async function mimoMeter(input, options) {
   const st = engineState();
   /* 费用单位：引擎的 message.cost 是**美元**。
      实测拟合（325 条 step-finish，残差 2.8e-17）：input 0.14 / output(+reasoning) 0.28 /

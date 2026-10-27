@@ -1,9 +1,9 @@
-# mimo-stats 安装器（Windows / PowerShell 5.1+）
+# mimo-meter 安装器（Windows / PowerShell 5.1+）
 #
 # 安装位置：%APPDATA%\Xiaomi MiMo\engine-config\
-#   mimo-stats.mjs            引擎插件（跑在 Electron 主进程里）
-#   mimo-stats-overlay.js     注入渲染进程的浮层逻辑
-#   mimo-stats-overlay.css    浮层样式
+#   mimo-meter.mjs            引擎插件（跑在 Electron 主进程里）
+#   mimo-meter-overlay.js     注入渲染进程的浮层逻辑
+#   mimo-meter-overlay.css    浮层样式
 # 登记位置：engine-config\mimocode.jsonc 的 plugin 数组（app 不会改写这个文件）
 #
 # 不改 app.asar、不改 runtime 文件、不动代码签名。
@@ -20,14 +20,14 @@ if (-not (Test-Path $cfg)) {
   exit 1
 }
 
-$verText = Select-String -Path (Join-Path $src "mimo-stats.mjs") -Pattern 'const VERSION = "([^"]+)"' |
+$verText = Select-String -Path (Join-Path $src "mimo-meter.mjs") -Pattern 'const VERSION = "([^"]+)"' |
   Select-Object -First 1
 $ver = if ($verText -and $verText.Matches.Count -gt 0) { $verText.Matches[0].Groups[1].Value } else { "unknown" }
-Write-Host "安装 mimo-stats v$ver"
+Write-Host "安装 mimo-meter v$ver"
 
-Copy-Item (Join-Path $src "mimo-stats.mjs")  (Join-Path $cfg "mimo-stats.mjs")          -Force
-Copy-Item (Join-Path $src "overlay.js")      (Join-Path $cfg "mimo-stats-overlay.js")   -Force
-Copy-Item (Join-Path $src "overlay.css")     (Join-Path $cfg "mimo-stats-overlay.css")  -Force
+Copy-Item (Join-Path $src "mimo-meter.mjs")  (Join-Path $cfg "mimo-meter.mjs")          -Force
+Copy-Item (Join-Path $src "overlay.js")      (Join-Path $cfg "mimo-meter-overlay.js")   -Force
+Copy-Item (Join-Path $src "overlay.css")     (Join-Path $cfg "mimo-meter-overlay.css")  -Force
 Write-Host "已复制 3 个文件到 $cfg"
 
 $jsonc = Join-Path $cfg "mimocode.jsonc"
@@ -41,12 +41,12 @@ $keep = New-Object System.Collections.ArrayList
 if ($data -and $data.plugin) {
   foreach ($p in @($data.plugin)) {
     $spec = if ($p -is [System.Array]) { [string]$p[0] } else { [string]$p }
-    if ($spec -like "*mimo-stats*") { continue }
+    if ($spec -like "*mimo-meter*") { continue }
     [void]$keep.Add($p)
   }
 }
 
-$target = Join-Path $cfg "mimo-stats.mjs"
+$target = Join-Path $cfg "mimo-meter.mjs"
 $uri = ([System.Uri]$target).AbsoluteUri
 [void]$keep.Add(@($uri, @{}))
 
@@ -73,7 +73,7 @@ Write-Host "已登记插件：$uri"
 
 Write-Host ""
 Write-Host "完成。完全退出 MiMo Desktop（托盘图标右键退出，不是关窗口）再重新打开即可生效。"
-Write-Host "日志：$env:LOCALAPPDATA\Xiaomi MiMo Stats\mimo-stats.log"
+Write-Host "日志：$env:LOCALAPPDATA\mimo-meter\mimo-meter.log"
 Write-Host ""
 Write-Host "注意：如果是从终端/PowerShell 启动 MiMo，请先清掉 ELECTRON_RUN_AS_NODE 环境变量，"
 Write-Host "      否则 Electron 会以纯 Node 模式运行、窗口不会出现："
