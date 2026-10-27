@@ -50,13 +50,13 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 
 <div align="center">
 
-**明细卡片**
+**状态栏**（嵌在输入框下方那一行，与 app 自己的免责声明同排）
 
-<img src="docs/images/panel.png" width="480" alt="Token 用量与会话统计卡片">
+<img src="docs/images/bar.png" width="582" alt="底栏状态条：轮数、步数、tok/s、总量、缓存命中率">
 
-**状态栏**
+**明细卡片**（点状态栏或按 `⌥⌘T` 展开）
 
-<img src="docs/images/bar.png" width="720" alt="底栏状态条">
+<img src="docs/images/panel.png" width="540" alt="Token 用量与会话统计卡片">
 
 </div>
 
