@@ -6,20 +6,22 @@
  *   float  —— 兜底：找不到 composer 时退回右下角胶囊。
  *
  * 由 engine-config/mimo-meter.mjs 通过 webContents.executeJavaScript 注入；
- * 幂等：重复注入只刷新版本，不堆 DOM。
+ * 幂等：同版本重复注入直接返回（不动 DOM、不丢开合状态），版本变了才拆除重建。
  */
 (function () {
-  var VERSION = "2.0.3";
+  var VERSION = "2.0.4";
   var HOST_ID = "mimo-meter-host";
 
-  /* 热重载：先把上一个实例彻底拆掉（observer / 监听器 / DOM），
-     否则旧闭包的 MutationObserver 还活着，会把旧 host 重新 append 回 body，
-     页面上就出现两个浮层。 */
+  /* 幂等：同版本 + host 还在 → 什么都不做，直接返回。
+     这条必须先判：主进程在 did-navigate-in-page（SPA 换会话）、did-finish-load、
+     窗口创建后 600ms 各注入一次，如果每次都重建 DOM，开着的卡片会被关掉。
+     版本不同才走下面的拆除重建（热重载）。
+     注意顺序不能反过来——导出对象恒有 destroy，"先判 destroy 再判版本"
+     会让同版本分支永远不可达（v2.0.3 就是这样，实测每次注入都重建）。 */
   var prev = window.__MIMO_METER__;
+  if (prev && prev.version === VERSION && document.getElementById(HOST_ID)) return;
   if (prev && typeof prev.destroy === "function") {
     try { prev.destroy(); } catch (e) {}
-  } else if (prev && prev.version === VERSION && document.getElementById(HOST_ID)) {
-    return;
   }
 
   /* ---------------- 会话 id 捕获（备用信号；主信号在主进程桥拦截里） ---------------- */
@@ -216,13 +218,22 @@
   document.body.appendChild(host);
 
   /* ---------------- 挂载：优先塞进 composer 底部那一行 ---------------- */
+  /* 缓存命中的 composer 元素。MutationObserver 在流式输出时每秒会叫醒好几次，
+     每次都 querySelectorAll + 逐个 getBoundingClientRect 是白跑的；
+     命中缓存时只剩一次 isConnected 属性读。
+     元素被 React 换掉（isConnected 变 false）时自然重查。 */
+  var wrapCache = null;
+  function invalidateWrap() { wrapCache = null; }
+
   function pickComposerWrap() {
+    if (wrapCache && wrapCache.isConnected) return wrapCache;
     var list = Array.prototype.slice.call(document.querySelectorAll(".composer-wrap"));
     var best = null;
     for (var i = 0; i < list.length; i++) {
       var r = list[i].getBoundingClientRect();
       if (r.width > 240 && r.height > 40) best = list[i];
     }
+    wrapCache = best;   /* 找不到就留 null，下次仍然重查 */
     return best;
   }
 
@@ -291,6 +302,8 @@
     }
     return out;
   }
+
+  var headerCache = { at: 0, texts: [] };
 
   function currentView() {
     var wrap = pickComposerWrap();
@@ -408,7 +421,6 @@
      优先向上展开；上方空间不足就翻到下方；两边都不够就取较大的一侧并内部滚动。
      这样无论窗口多矮、分段多靠上，卡片都不会跑出屏幕。 */
   var PANEL_GAP = 9;
-  var PANEL_MIN_H = 140;   // 低于这个高度就不值得向上展开
 
   function placePanel(which) {
     var p = panelOf(which);
@@ -416,65 +428,12 @@
     var seg = which === "tok" ? segTok : segRounds;
     var st = p.style;
 
-    /* 卡片是 host 的直接子节点（不能放进 .mm-seg，那里有 overflow:hidden
-       会把绝对定位的卡片裁掉）。所以横向位置要按「分段在 host 内的偏移」算：
-       Token 卡右对齐到右段右缘，统计卡左对齐到左段左缘。 */
-    st.position = "absolute";
-    st.top = "auto";
-    st.bottom = "auto";
-    st.marginTop = "";
-    st.marginBottom = "";
-
-    var hostRect = host.getBoundingClientRect();
-    var segRect = seg.getBoundingClientRect();
+    /* 卡片是 host 的直接子节点（不能塞进 .mm-seg，那里 overflow:hidden 会把
+       绝对定位的卡片一起裁掉）。宽度先量出来，横向位置在下面按分段算。
+       注意：这里只量一次 offsetWidth —— 曾经有过一版先按 absolute 算一遍、
+       再改成 fixed 重算一遍，前半段的 rect/自然高度全是白读的（每次多 4 次
+       强制布局），已删。 */
     var panelW = p.offsetWidth || 288;
-
-    /* host 是 absolute 且宽度由内容决定，可能量到 0，所以横向偏移一律
-       用「分段相对 host 的偏移」算，再夹到视口内（而不是夹到 host 内）。 */
-    var left;
-    if (which === "tok") {
-      left = (segRect.right - hostRect.left) - panelW;   // 右对齐到右段右缘
-    } else {
-      left = segRect.left - hostRect.left;               // 左对齐到左段左缘
-    }
-    /* 夹到视口：转成视口坐标再判断 */
-    var absLeft = hostRect.left + left;
-    var vw = window.innerWidth || document.documentElement.clientWidth;
-    if (absLeft < 8) left += 8 - absLeft;
-    if (absLeft + panelW > vw - 8) left -= (absLeft + panelW) - (vw - 8);
-    st.left = Math.round(left) + "px";
-    st.right = "auto";
-
-    var vh = window.innerHeight || document.documentElement.clientHeight;
-    var above = segRect.top - PANEL_GAP - 8;
-    var below = vh - segRect.bottom - PANEL_GAP - 8;
-
-    /* 量自然高度（调用方保证此刻已 display:block） */
-    st.maxHeight = "";
-    st.overflowY = "";
-    var natural = Math.max(p.scrollHeight || 0, Math.round(p.getBoundingClientRect().height) || 0);
-    if (!natural) natural = 220;
-
-    /* 选方向：优先选能完整放下的那侧；两边都放不下就选空间更大的那侧。
-       绝不能因为「上方略大于下方」就选上方，那样会顶出屏幕。 */
-    var fitsAbove = above >= natural;
-    var fitsBelow = below >= natural;
-    var up;
-    if (fitsAbove) up = true;
-    else if (fitsBelow) up = false;
-    else up = above >= below;          // 都放不下 → 选大的那边
-
-    var room = Math.max(0, up ? above : below);
-    /* 两侧都几乎没有空间（分段贴着视口顶/底）时，至少给个能看的高度 */
-    var limit = Math.max(80, Math.floor(room));
-
-    /* 先按「预期高度」放一次，量出真实 rect，再按真实 rect 校正。
-       因为 maxHeight 生效后卡片会变矮，一次算不准。 */
-    /* 卡片是 host 的子节点：top:0 对齐 host 顶边，top:100% 对齐 host 底边。
-       而 host 的顶/底边和分段不一定完全重合（分段有 padding），
-       所以这里额外用「分段相对 host 的偏移」做校正。 */
-    var segTopInHost = segRect.top - hostRect.top;     // 分段顶边相对 host 顶边
-    var segBottomInHost = segRect.bottom - hostRect.top;
 
     /* 用 position: fixed + 视口坐标：卡片挂在 host 上，但 host 在长页面里
        可能离视口很远（滚动后 rect.top 是几千像素），用 absolute/bottom 都会算歪。
@@ -484,45 +443,42 @@
     st.marginTop = "";
     st.marginBottom = "";
 
-    var segRect2 = seg.getBoundingClientRect();
+    var segRect = seg.getBoundingClientRect();
     var vw = window.innerWidth || document.documentElement.clientWidth;
-    var vh2 = window.innerHeight || document.documentElement.clientHeight;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
 
     /* 横向：Token 卡右对齐到右段右缘，统计卡左对齐到左段左缘，再夹进视口 */
-    var left;
-    if (which === "tok") left = segRect2.right - panelW;
-    else left = segRect2.left;
+    var left = which === "tok" ? segRect.right - panelW : segRect.left;
     if (left < 8) left = 8;
     if (left + panelW > vw - 8) left = vw - 8 - panelW;
     st.left = Math.round(left) + "px";
     st.right = "auto";
 
     /* 纵向可用空间 */
-    var above2 = segRect2.top - PANEL_GAP - 8;
-    var below2 = vh2 - segRect2.bottom - PANEL_GAP - 8;
+    var above = segRect.top - PANEL_GAP - 8;
+    var below = vh - segRect.bottom - PANEL_GAP - 8;
 
     st.maxHeight = "";
     st.overflowY = "";
-    var natural2 = Math.max(p.scrollHeight || 0, Math.round(p.getBoundingClientRect().height) || 0);
-    if (!natural2) natural2 = 220;
+    var natural = Math.max(p.scrollHeight || 0, Math.round(p.getBoundingClientRect().height) || 0);
+    if (!natural) natural = 220;
 
-    var fitsAbove2 = above2 >= natural2;
-    var fitsBelow2 = below2 >= natural2;
-    var up2;
-    if (fitsAbove2) up2 = true;
-    else if (fitsBelow2) up2 = false;
-    else up2 = above2 >= below2;
-
-    var room2 = Math.max(0, up2 ? above2 : below2);
-    var limit2 = Math.max(80, Math.floor(room2));
+    /* 选方向：优先选能完整放下的那侧；两边都放不下就选空间更大的那侧。
+       绝不能因为「上方略大于下方」就选上方，那样会顶出屏幕。 */
+    var fitsAbove = above >= natural;
+    var fitsBelow = below >= natural;
+    var up = fitsAbove ? true : (fitsBelow ? false : above >= below);
+    /* 两侧都几乎没有空间（分段贴着视口顶/底）时，至少给个能看的高度 */
+    var limit = Math.max(80, Math.floor(Math.max(0, up ? above : below)));
 
     /* 纵向贴着整条状态栏（bar）而不是单个分段：
        分段只有 17px 高且带 1px padding，按分段对齐会出现几像素偏差。 */
     var barRect = bar.getBoundingClientRect();
-    function applyFixed(h) {
-      if (up2) {
+    /* top/bottom 与卡片自身高度无关，所以量高度前后各设一次是多余的，一次就够 */
+    function applyFixed() {
+      if (up) {
         st.top = "auto";
-        st.bottom = (vh2 - barRect.top + PANEL_GAP) + "px";
+        st.bottom = (vh - barRect.top + PANEL_GAP) + "px";
       } else {
         st.top = (barRect.bottom + PANEL_GAP) + "px";
         st.bottom = "auto";
@@ -531,15 +487,12 @@
 
     st.top = "auto";
     st.bottom = "auto";
-    applyFixed(natural2);
-    var realH2 = Math.round(p.getBoundingClientRect().height) || natural2;
+    applyFixed();
+    var realH = Math.round(p.getBoundingClientRect().height) || natural;
 
-    if (realH2 > limit2) {
-      st.maxHeight = limit2 + "px";
+    if (realH > limit) {
+      st.maxHeight = limit + "px";
       st.overflowY = "auto";
-      applyFixed(limit2);
-    } else {
-      applyFixed(realH2);
     }
 
     /* 最终兜底：以实测 rect 为准，越界就拉回视口 */
@@ -547,17 +500,16 @@
     if (fin.top < 8) {
       st.top = "8px";
       st.bottom = "auto";
-      var rest = vh2 - 16;
+      var rest = vh - 16;
       if (fin.height > rest) {
         st.maxHeight = rest + "px";
         st.overflowY = "auto";
       }
-    } else if (fin.bottom > vh2 - 8) {
+    } else if (fin.bottom > vh - 8) {
       st.bottom = "8px";
       st.top = "auto";
-      var rest2 = vh2 - 16;
-      if (fin.height > rest2) {
-        st.maxHeight = rest2 + "px";
+      if (fin.height > vh - 16) {
+        st.maxHeight = (vh - 16) + "px";
         st.overflowY = "auto";
       }
     }
@@ -590,6 +542,13 @@
   onWin(window, "resize", schedulePlace);
   onWin(document, "scroll", schedulePlace, true);
 
+  /* 卡片能不能开：没有会话数据、或状态条本身是隐藏的（空会话 / 首页）时都不开。
+     少了 mm-idle 这一条时，空会话按 ⌥⌘T 会拿一个 display:none 的分段去量矩形，
+     量到的全是 0，卡片被夹到视口左上角飘着。 */
+  function canOpen() {
+    return !!(state.data && state.data.sid) && !host.classList.contains("mm-idle");
+  }
+
   function bindToggle(node, which) {
     node.addEventListener("click", function (e) {
       e.stopPropagation();
@@ -597,14 +556,14 @@
         state.justDragged = false;
         return;
       }
-      if (!state.data || !state.data.sid) return;
+      if (!canOpen()) return;
       toggle(which);
     });
     node.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         e.stopPropagation();
-        if (!state.data || !state.data.sid) return;
+        if (!canOpen()) return;
         toggle(which);
       }
     });
@@ -630,11 +589,11 @@
     if (e.altKey && e.metaKey && !e.ctrlKey) {
       var k = (e.key || "").toLowerCase();
       if (k === "t" || e.code === "KeyT") {
-        if (!state.data || !state.data.sid) return;
+        if (!canOpen()) return;
         e.preventDefault();
         toggle("tok");
       } else if (k === "y" || e.code === "KeyY") {
-        if (!state.data || !state.data.sid) return;
+        if (!canOpen()) return;
         e.preventDefault();
         toggle("stat");
       }
@@ -760,6 +719,7 @@
 
   onWin(window, "resize", function () {
     invalidateFit();
+    invalidateWrap();   /* 视口变了，「哪个 composer 最合适」可能也变了 */
     fitBar(true);
   });
   var fitTimer = setTimeout(function () { fitBar(true); }, 400);
@@ -770,17 +730,34 @@
      两个 seg 会被压缩，clientWidth 永远等于 scrollWidth，看起来「放得下」
      其实文字被 ellipsis 截断了。
      做法：临时把本段设为不收缩，量它真实需要的宽度，和 budget 比。 */
-  function applyTiers(seg, textNode, tiers, budget) {
-    for (var i = 0; i < tiers.length; i++) {
-      seg.classList.toggle("mm-compact", !!tiers[i].cls);
-      textNode.textContent = tiers[i].text || "—";
-      seg.style.flex = "0 0 auto";
-      var need = seg.scrollWidth;
-      seg.style.flex = "";
-      if (need <= budget) return need;
+  /* 档位选择带记忆。文案每 400ms 变一次，但「该用第几档」几乎不变：
+     每次都从最宽松那档开始量，等于每 tick 强制 7 次同步布局
+     （24k 节点页面实测）。改成从上次的档位起步、只降不升，
+     稳态下每段每帧只量 1 次；预算 / 形态 / 会话变化时由调用方重置记忆，
+     退回全量搜索。 */
+  var tierMemo = { budget: -1, mode: "", sid: null, stat: 0, tok: 0 };
+
+  function measureTier(seg, textNode, tiers, i) {
+    var tier = tiers[i];
+    seg.classList.toggle("mm-compact", !!tier.cls);
+    textNode.textContent = tier.text || "—";
+    seg.style.flex = "0 0 auto";
+    var need = seg.scrollWidth;      /* 唯一一次强制布局 */
+    seg.style.flex = "";
+    return need;
+  }
+
+  function applyTiers(seg, textNode, tiers, budget, key, fromZero) {
+    var last = tiers.length - 1;
+    var i = fromZero ? 0 : Math.min(Math.max(tierMemo[key] | 0, 0), last);
+    var need = measureTier(seg, textNode, tiers, i);
+    /* 连最紧凑的档都放不下时停在最后一档，靠 ellipsis 兜底 */
+    while (need > budget && i < last) {
+      i++;
+      need = measureTier(seg, textNode, tiers, i);
     }
-    /* 连最紧凑的档都放不下：就停在最后一档，靠 ellipsis 兜底 */
-    return budget;
+    tierMemo[key] = i;
+    return need;
   }
 
   /* ---------------- 渲染 ---------------- */
@@ -850,21 +827,33 @@
       { cls: "mm-compact", text: rate != null ? pct(rate) : compact(total) },
     ];
 
-    /* 测量只做一次（fitBar 读缓存）。两段共享同一个可用宽度：
-       先各按「一半预算」降级，若某段用不满就把余量让给另一段。 */
+    /* 两段共享同一个可用宽度：先各按「一半预算」降级，若某段用不满就把余量
+       让给另一段。fitBar 只读 availCache，本身不做测量。 */
     fitBar();
     var budget = availCache.value || 240;
+    /* 预算 / 形态 / 会话变了，「该用第几档」才真的会变 —— 这时才重置记忆 */
+    var fresh = tierMemo.budget !== budget ||
+                tierMemo.mode !== host.dataset.mode ||
+                tierMemo.sid !== d.sid;
+    if (fresh) {
+      tierMemo.budget = budget;
+      tierMemo.mode = host.dataset.mode;
+      tierMemo.sid = d.sid;
+      tierMemo.stat = 0;
+      tierMemo.tok = 0;
+    }
     var gapW = 12;                       /* .mm-bar 的 gap */
     var usable = Math.max(120, budget - gapW);
 
     /* 第一轮：各给一半预算，让放不下的那一段降级 */
     var half = Math.max(56, Math.floor(usable / 2));
-    var wStat = applyTiers(segRounds, roundsTxt, statTiers, half);
-    var wTok = applyTiers(segTok, tokTxt, tokTiers, half);
+    var wStat = applyTiers(segRounds, roundsTxt, statTiers, half, "stat");
+    var wTok = applyTiers(segTok, tokTxt, tokTiers, half, "tok");
 
-    /* 第二轮：如果两段加起来还有余量，就让后一段试着升回更宽松的档 */
-    if (wStat + wTok < usable) {
-      wTok = applyTiers(segTok, tokTxt, tokTiers, usable - wStat);
+    /* 第二轮：如果两段加起来还有余量，就让后一段升回更宽松的档。
+       稳态下记忆已经收敛，这一步不可能改变结果，只在重置后跑一次。 */
+    if (fresh && wStat + wTok < usable) {
+      wTok = applyTiers(segTok, tokTxt, tokTiers, usable - wStat, "tok", true);
     }
 
     /* 胶囊（兜底形态） */
@@ -891,7 +880,6 @@
     rRea.row.style.display = t.reasoning ? "" : "none";
     if (t.reasoning) rRea.v.textContent = fmt(t.reasoning) + " tok";
 
-    fitBar();
     footLeft.textContent = (d.rounds || 0) + " 轮 · " + (d.steps || 0) + " 步";
     /* 金额：优先用主进程换算好的 costCny；showCny=false 时退回引擎原值（美元）。
        两者都没有就整行留空。 */
@@ -961,8 +949,17 @@
       var view = currentView();
       var sid = window.__mimoMeterSid || null;
       /* 顶栏文本只用于「有会话页但没有 sid」时的标题反查，
-         其它情况一律不扫 DOM（24k 节点实测 9ms/次）。 */
-      var texts = (!sid && view === "thread") ? headerTexts() : [];
+         其它情况一律不扫 DOM（24k 节点实测 9ms/次）。
+         主进程每 900ms 探一次，这里再缓存 3s：这是最后兜底信号，
+         晚几秒发现标题没有任何影响。 */
+      var texts = [];
+      if (!sid && view === "thread") {
+        var now = Date.now();
+        if (now - headerCache.at > 3000) {
+          headerCache = { at: now, texts: headerTexts() };
+        }
+        texts = headerCache.texts;
+      }
       return {
         version: VERSION,
         sid: sid,
@@ -976,4 +973,9 @@
   };
 
   render();
+  /* 首次挂载必须显式调用：以前只靠 MutationObserver 触发，而 render() 写
+     textContent 恰好会产生一条 childList 记录，于是"能跑"——但这是巧合。
+     一旦某次 render 走 idle 分支（只改 class），就没有任何回调，
+     浮层会一直停在右下角胶囊形态。 */
+  attach();
 })();

@@ -25,12 +25,11 @@
   pointer-events: none;
   gap: 0;
 }
-#mimo-meter-host.mm-compact .mm-seg svg {
+/* 紧凑档：mm-compact 是加在 .mm-seg 上的（见 overlay.js 的 applyTiers），
+   不是加在 host 上。以前写成 `#mimo-meter-host.mm-compact`，而 host 永远
+   没有这个类 —— 规则整条不匹配，「去图标」从来没生效过，紧凑档白占 15px。 */
+#mimo-meter-host .mm-seg.mm-compact svg {
   display: none;
-}
-#mimo-meter-host.mm-compact .mm-bar {
-  gap: 9px;
-  font-size: 10px;
 }
 
 #mimo-meter-host[data-mode="inline"] .mm-seg {

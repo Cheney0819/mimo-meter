@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const VERSION = "2.0.3";
+const VERSION = "2.0.4";
 const TICK_MS = 400;
 const SID_POLL_MS = 900;
 const DB_RETRY_MS = 5000;      // 打不开数据库时的重试间隔
@@ -57,22 +57,34 @@ const LOG_BUFFER_MAX = 64 * 1024;
 const logBuf = [];
 let logBufBytes = 0;
 let logFlushTimer = null;
-let logRotated = false;
+/* -1 = 还没 stat 过。之后自己记账，避免每次 flush 都 statSync。
+   轮转必须按「已写入字节」判断：以前用 logRotated 标志，本进程只判一次，
+   之后再也不检查，长跑几天日志能涨到几百 MB。 */
+let logFileBytes = -1;
 
 function flushLog() {
   if (!logBuf.length) return;
   const chunk = logBuf.join("");
   logBuf.length = 0;
   logBufBytes = 0;
+  const bytes = Buffer.byteLength(chunk);
   try {
     fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    if (!logRotated) {
-      logRotated = true;
+    if (logFileBytes < 0) {
       try {
-        if (fs.statSync(LOG_FILE).size > LOG_MAX_BYTES) fs.renameSync(LOG_FILE, LOG_FILE + ".1");
+        logFileBytes = fs.statSync(LOG_FILE).size;
+      } catch {
+        logFileBytes = 0;
+      }
+    }
+    if (logFileBytes + bytes > LOG_MAX_BYTES) {
+      try {
+        fs.renameSync(LOG_FILE, LOG_FILE + ".1");
       } catch {}
+      logFileBytes = 0;
     }
     fs.appendFileSync(LOG_FILE, chunk);
+    logFileBytes += bytes;
   } catch {}
 }
 
@@ -202,6 +214,9 @@ async function getSqlite() {
 let db = null;
 let dbPath = null;
 let dbAttemptedAt = 0;
+/* 退出流程一旦开始，就不允许再把句柄重新打开（Windows 上留着只读句柄
+   会挡住用户重装/删库，正是 PITFALLS §2 那类问题）。 */
+let shuttingDown = false;
 let dbPrepared = null;   // 复用已编译语句，省掉每次 prepare 的开销
 
 function resetPrepared() {
@@ -210,6 +225,7 @@ function resetPrepared() {
 
 async function openDb({ force = false } = {}) {
   if (db) return db;
+  if (shuttingDown) return null;
   /* 打开失败过就等一会儿再试，避免每 400ms 都去撞一次文件系统。
      force=true 时（例如发现库文件刚出现）立刻重试。 */
   const now = Date.now();
@@ -319,16 +335,25 @@ function stmts() {
  */
 
 const statsCache = new Map(); // sid -> stats
+/* 「步数降级成助手消息数」只对老库/异常库发生，一旦发生每个重算周期都会命中。
+   按 sid 只记一次，避免日志被同一行刷屏。 */
+const degradedSids = new Set();
 
 /* 退出或重开时释放句柄。只读连接不关一般不出事，但 Windows 上会挡住
    用户重装（Copy-Item 失败）或删除数据库。 */
-function closeDb() {
+function closeDb(st) {
   try {
     if (db) db.close();
   } catch {}
   db = null;
   resetPrepared();
   statsCache.clear();
+  degradedSids.clear();
+  /* 这两个缓存也按会话存，重开库后必须作废，否则最长 5s 内会拿旧 sid 显示 */
+  if (st) {
+    st.recentSidCache = null;
+    st.titleCache = null;
+  }
 }
 const STATS_CACHE_MAX = 8;
 
@@ -369,7 +394,11 @@ function computeSessionStats(sid) {
        这是个近似值，日志里标出来方便排查。 */
     if (!steps) {
       steps = row.assistants || 0;
-      if (steps) log("steps degraded to assistants", sid, steps);
+      if (steps && !degradedSids.has(sid)) {
+        if (degradedSids.size > 200) degradedSids.clear();
+        degradedSids.add(sid);
+        log("steps degraded to assistants", sid, steps);
+      }
     }
 
     let toolMs = 0;
@@ -431,6 +460,21 @@ function num(v) {
 
 const GLOBAL_KEY = "__MIMO_METER_ENGINE__";
 
+/* busy / rates 按会话存，只增不删会跟着会话数线性增长（长跑几百个会话）。
+   真正被读的只有当前会话，留最近若干条就够。 */
+const SESSION_MAP_MAX = 64;
+function capMap(map, max) {
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
+function setBusy(st, sid, value) {
+  st.busy.set(sid, value);
+  capMap(st.busy, SESSION_MAP_MAX);
+}
+
 function engineState() {
   if (globalThis[GLOBAL_KEY]) return globalThis[GLOBAL_KEY];
   const s = {
@@ -449,9 +493,12 @@ function engineState() {
     showCny: true,
     bridgeHooked: false,
     lastPush: 0,
-    windows: new WeakMap(), // webContents -> { cssKey }
+    windows: new WeakMap(), // webContents -> { cssKey, version }
     pollTimer: null,
     tickTimer: null,
+    polling: false,      // pollSid 重入保护
+    refreshing: false,   // refresh 重入保护
+    assetsTried: false,  // overlay.js/css 只读一次
     electron: null,
     overlayJs: null,
     overlayCss: null,
@@ -489,12 +536,14 @@ function readAsset(p, fallback) {
 }
 
 async function ensureAssets(st) {
-  if (!st.overlayJs) st.overlayJs = readAsset(overlayJsPath(), "");
-  if (!st.overlayCss) st.overlayCss = readAsset(overlayCssPath(), "");
-  if (!st.overlayVersion) {
-    const m = /var VERSION = "([^"]+)"/.exec(st.overlayJs || "");
-    st.overlayVersion = m ? m[1] : "unknown";
-  }
+  /* 只读一次：读失败时返回 ""，而 "" 是假值 —— 老写法 `if (!st.overlayJs)`
+     会让每次注入都重新读盘、重新打一条 asset read failed。 */
+  if (st.assetsTried) return;
+  st.assetsTried = true;
+  st.overlayJs = readAsset(overlayJsPath(), "");
+  st.overlayCss = readAsset(overlayCssPath(), "");
+  const m = /var VERSION = "([^"]+)"/.exec(st.overlayJs || "");
+  st.overlayVersion = m ? m[1] : "unknown";
 }
 
 function isAppWindow(win) {
@@ -512,7 +561,9 @@ async function injectWindow(st, win) {
   if (!isAppWindow(win)) return;
   try {
     const cur = st.windows.get(wc) || {};
-    /* 每次文档重载 / 版本变化都要重新插样式（insertCSS 不跨导航存活） */
+    /* 版本变化要重新插样式；整页导航后由 did-navigate 把这条记录删掉，
+       于是这里也会重新插一次 —— insertCSS 不跨文档存活，而只比版本号
+       会漏掉「同版本的第二次加载」，浮层就变成没有样式的裸文本。 */
     if (st.overlayCss && cur.version !== st.overlayVersion) {
       if (cur.cssKey) await wc.removeInsertedCSS(cur.cssKey).catch(() => {});
       const key = await wc.insertCSS(st.overlayCss);
@@ -549,8 +600,23 @@ async function pushPayload(st, payload) {
 async function pollSid(st) {
   const e = st.electron;
   if (!e) return;
+  /* 每次探活都是一次渲染进程往返。渲染进程卡住（长任务 / 断点 / beforeunload）
+     时 promise 不 resolve，而 setInterval 照旧每 900ms 再发一个 —— 必须挡住，
+     否则待处理的 IPC 会无限堆积。 */
+  if (st.polling) return;
+  st.polling = true;
+  try {
+    await pollSidOnce(st, e);
+  } finally {
+    st.polling = false;
+  }
+}
+
+async function pollSidOnce(st, e) {
   for (const win of e.BrowserWindow.getAllWindows()) {
     if (win.isDestroyed() || !isAppWindow(win)) continue;
+    /* 最小化时窗口不可见，探活没有意义，白唤醒渲染进程 */
+    if (win.isMinimized()) continue;
     try {
       const r = await win.webContents.executeJavaScript(
         "window.__MIMO_METER__ ? window.__MIMO_METER__.probe() : null",
@@ -620,6 +686,7 @@ function noteModelCall(st, props) {
   list.push({ at: Date.now(), rate });
   while (list.length > 6) list.shift();
   st.rates.set(sid, list);
+  capMap(st.rates, SESSION_MAP_MAX);
   addModelCall(sid, out, latency, ttft, decodeMs);
   /* 一次模型调用结束 = 库里有新的 step 数据，缓存要失效；
      但 dirty 不在这里置位：TTFT/TPS 走的是 rates，不需要重查库。 */
@@ -702,6 +769,18 @@ function recentSid(st) {
 }
 
 async function refresh(st, { force = false } = {}) {
+  /* 一次刷新里要 await 多个窗口的 executeJavaScript；渲染进程慢的时候
+     可能超过 400ms，setInterval 会再叠一层。挡掉重入，dirty 留给下一 tick。 */
+  if (st.refreshing) return;
+  st.refreshing = true;
+  try {
+    await refreshOnce(st, { force });
+  } finally {
+    st.refreshing = false;
+  }
+}
+
+async function refreshOnce(st, { force = false } = {}) {
   /* 数据库可能还没生成（首启）或 app 升级后路径变了：每次刷新顺手补一次，
      openDb 内部有 5s 退避，不会真的每 400ms 撞盘。 */
   if (!db) await openDb();
@@ -715,7 +794,7 @@ async function refresh(st, { force = false } = {}) {
     }
     return;
   }
-  if (st.lastPushedSid !== sid) st.lastPushedSid = sid;
+  st.lastPushedSid = sid;
   const approx = !st.pageSid;
 
   /* 节流：库没被写过、也没有活跃的实时速率，就没必要推 IPC。
@@ -980,8 +1059,13 @@ async function boot(st) {
 
   e.app.on("browser-window-created", (_ev, win) => {
     try {
-      win.webContents.on("did-finish-load", () => injectWindow(st, win));
-      win.webContents.on("did-navigate-in-page", () => injectWindow(st, win));
+      const wc = win.webContents;
+      /* 主框架换文档（⌘R / 崩溃恢复 / 更新后重载）：insertCSS 的产物随旧文档消失，
+         记录也必须作废，否则 injectWindow 会以为样式还在，跳过注入。
+         did-navigate-in-page（SPA 路由）不算，那种情况样式还在。 */
+      wc.on("did-navigate", () => st.windows.delete(wc));
+      wc.on("did-finish-load", () => injectWindow(st, win));
+      wc.on("did-navigate-in-page", () => injectWindow(st, win));
       setTimeout(() => injectWindow(st, win), 600);
     } catch (err) {
       log("window hook failed", String(err?.message || err));
@@ -1006,8 +1090,19 @@ async function boot(st) {
   /* 退出前把缓冲的日志落盘，别丢最后几行（排查问题最需要的往往是它），
      同时关掉数据库句柄：Windows 上留着只读句柄会挡住用户重装或删库。 */
   function onQuit() {
+    shuttingDown = true;
+    /* 先停定时器再关库：否则退出瞬间跳一次 refresh 会把刚 close 的句柄重新打开，
+       Windows 上就留下一个挡住重装/删库的只读句柄。 */
+    if (st.tickTimer) {
+      clearInterval(st.tickTimer);
+      st.tickTimer = null;
+    }
+    if (st.pollTimer) {
+      clearInterval(st.pollTimer);
+      st.pollTimer = null;
+    }
     flushLog();
-    closeDb();
+    closeDb(st);
   }
   e.app.on("before-quit", onQuit);
   e.app.on("will-quit", onQuit);
@@ -1051,7 +1146,7 @@ export default async function mimoMeter(input, options) {
         if (type === "message.part.delta") {
           const sid = sidOf(props);
           if (sid) {
-            st.busy.set(sid, true);
+            setBusy(st, sid, true);
             if (sid === displaySid(st)) st.dirty = true;
           }
           return;
@@ -1061,8 +1156,8 @@ export default async function mimoMeter(input, options) {
           if (!sid) return;
           const role = props?.info?.role;
           const partType = props?.part?.type;
-          if (role === "user" || role === "assistant") st.busy.set(sid, true);
-          if (partType === "step-finish" || partType === "step-start") st.busy.set(sid, true);
+          if (role === "user" || role === "assistant") setBusy(st, sid, true);
+          if (partType === "step-finish" || partType === "step-start") setBusy(st, sid, true);
           /* 这两类事件意味着库真的被写了，统计缓存必须失效 */
           invalidateStats(sid);
           if (sid === displaySid(st)) st.dirty = true;
@@ -1071,7 +1166,7 @@ export default async function mimoMeter(input, options) {
         if (type === "session.idle") {
           const sid = sidOf(props);
           if (sid) {
-            st.busy.set(sid, false);
+            setBusy(st, sid, false);
             invalidateStats(sid);
             if (sid === displaySid(st)) st.dirty = true;
           }
@@ -1081,7 +1176,7 @@ export default async function mimoMeter(input, options) {
           const sid = sidOf(props);
           if (sid) {
             const status = props?.status?.type || props?.status;
-            st.busy.set(sid, status === "busy" || status === "retry");
+            setBusy(st, sid, status === "busy" || status === "retry");
             if (sid === displaySid(st)) st.dirty = true;
           }
         }

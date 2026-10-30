@@ -43,18 +43,19 @@ total = input + output + reasoning + cache.read + cache.write
 ## 提交前检查
 
 ```bash
-node --check src/mimo-meter.mjs
-node --check src/overlay.js
-bash -n install.sh && bash -n uninstall.sh
-node scripts/check-version.mjs
+./scripts/check.sh
 ```
 
-配置编辑逻辑有回归测试，改动 `scripts/jsonc_edit.*` 后请跑：
+一条命令跑完：语法、版本号一致、PS BOM、配置编辑（Python / PowerShell）、
+浮层行为、SQL 口径、敏感文件。没有 PowerShell 时对应项会跳过，靠 CI 补。
+
+也可以单跑：
 
 ```bash
 python3 scripts/test_jsonc_edit.py                       # 48 项
 pwsh -NoLogo -File scripts/test_jsonc_edit.ps1           # 53 项（Windows / pwsh）
-node scripts/test_overlay.mjs                            # 17 项，需要 Chrome
+node scripts/test_overlay.mjs                            # 58 项，需要 Chrome
+node scripts/test-sql.mjs                                # 统计口径，合成库也能量
 ```
 
 并确认没有把个人路径、会话标题、`metrics.json`、日志文件带进提交。

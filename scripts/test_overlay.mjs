@@ -3,12 +3,13 @@
  * overlay.js 的行为测试（headless Chrome 实跑，不 mock DOM）。
  *
  * 覆盖：
- *   1. 幂等注入：同版本重复注入只保留一个 host
+ *   1. 幂等注入：同版本重复注入直接返回，不重建 DOM、不丢开合状态
  *   2. 热重载：换版本注入后旧实例被拆干净，不会出现两个 host
  *   3. probe()：无 sid 时返回 headerTexts；有 sid 时跳过 DOM 扫描
  *   4. 金额：costCny 优先 / showCny=false 退回原值 / currency 生效 / 0 显示 ¥0.00
- *   5. 空闲态：sid 为 null 时整条隐藏
- *   6. destroy()：监听器与 observer 全部解绑
+ *   5. 空闲态：sid 为 null 时整条隐藏；空会话时快捷键不能弹卡片
+ *   6. 紧凑档：mm-compact 必须真的隐藏图标（选择器跟着类走）
+ *   7. destroy()：监听器与 observer 全部解绑
  *
  * 用法：node scripts/test_overlay.mjs [chrome 路径]
  */
@@ -45,56 +46,6 @@ const overlaySrc = fs.readFileSync(OVERLAY, "utf8");
 const OVERLAY_CSS = path.join(ROOT, "src", "overlay.css");
 const overlayCss = fs.readFileSync(OVERLAY_CSS, "utf8");
 
-/* 造一个模拟 MiMo 页面：composer + 免责声明 + 一堆消息节点 */
-const PAGE = `<!doctype html><meta charset="utf-8">
-<style>
-  body { font: 13px system-ui; margin: 0; }
-  #root { padding: 20px 40px 20px 260px; }
-  .composer-wrap { width: 720px; min-height: 60px; }
-  .composer-wrap { position: relative; }
-  .composer-ai-disclaimer { text-align: center; }
-</style>
-<style id="mm-css">${overlayCss}</style>
-<div id="root">
-  <div class="thread-header"><span class="t">我的会话标题</span></div>
-  <div id="msgs"></div>
-  <div class="composer-wrap">
-    <textarea id="composer-input" placeholder="描述任务"></textarea>
-    <div class="composer-ai-disclaimer">内容由 AI 生成，请注意核实</div>
-  </div>
-</div>
-<pre id="out"></pre>
-<script>
-  // 造 800 条消息，模拟长会话
-  var msgs = document.getElementById('msgs');
-  var f = document.createDocumentFragment();
-  for (var i = 0; i < 800; i++) {
-    var d = document.createElement('div');
-    d.className = 'msg';
-    d.innerHTML = '<span class="who">assistant</span><div class="body"><p>正文 ' + i + '</p></div>';
-    f.appendChild(d);
-  }
-  msgs.appendChild(f);
-</script>
-<script>
-/*__OVERLAY__*/
-</script>
-<script>
-var results = [];
-function ok(name, cond, detail) { results.push({ name: name, pass: !!cond, detail: detail || '' }); }
-
-// ---- 1) 首次注入后只有一个 host ----
-ok('首次注入后有 host', !!document.getElementById('mimo-meter-host'));
-ok('只有一个 host', document.querySelectorAll('#mimo-meter-host').length === 1);
-
-// ---- 2) 幂等：再注入同版本 ----
-var api1 = window.__MIMO_METER__;
-__REINJECT__;
-
-// ---- 3) 热重载：换一个版本号注入，旧实例应被 destroy ----
-window.__MIMO_METER__ = null; // 模拟版本变化（下面用真注入验证）
-</script>
-`;
 
 /* 用一次 page load 完成所有断言：把 overlay 源码内联两次（第二次模拟热重载） */
 function buildPage() {
@@ -177,7 +128,7 @@ function buildPage() {
     return el ? el.textContent : null;
   }
   var base = {
-    sid: 'ses_test12345678', title: 'T', model: 'mimo', rounds: 1, steps: 2,
+    sid: 'ses_test12345678', title: '会话标题ABC', model: 'mimo', rounds: 1, steps: 2,
     tokens: { total: 1000, input: 100, output: 200, reasoning: 0, read: 700, write: 0 },
     timing: { modelMs: 1000, toolMs: 100, ttftMs: 200, tps: 50 },
     busy: false, approx: false, currency: '¥', costCny: 0.5, cost: 0.07,
@@ -249,6 +200,25 @@ function buildPage() {
      getComputedStyle(panelTokEl).display === 'none' && getComputedStyle(panelStatEl).display === 'none',
      getComputedStyle(panelTokEl).display + '/' + getComputedStyle(panelStatEl).display);
 
+  // 紧凑档必须真的隐藏图标：CSS 曾把规则写成 #mimo-meter-host.mm-compact，
+  // 而类加在 .mm-seg 上，选择器永远不匹配，紧凑档白占 15px。
+  var svgTok = segTokEl.querySelector('svg');
+  var compactNow = segTokEl.classList.contains('mm-compact');
+  ok('紧凑档隐藏图标（非紧凑档保留）',
+     compactNow ? getComputedStyle(svgTok).display === 'none' : getComputedStyle(svgTok).display !== 'none',
+     'compact=' + compactNow + ' display=' + getComputedStyle(svgTok).display);
+
+  // 空会话（状态条隐藏）时快捷键不能弹卡片：曾经拿 0 尺寸的分段去定位，
+  // 卡片会飘到视口左上角。
+  api2.update(Object.assign({}, base, {
+    rounds: 0, steps: 0,
+    tokens: { total: 0, input: 0, output: 0, reasoning: 0, read: 0, write: 0 },
+  }));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 't', altKey: true, metaKey: true, bubbles: true }));
+  ok('空会话时 ⌥⌘T 不弹卡片', getComputedStyle(panelTokEl).display === 'none',
+     getComputedStyle(panelTokEl).display);
+  api2.update(base);
+
   // 点 Token 段 → 只开 Token 卡
   segTokEl.click();
   ok('点 Token 段只开 Token 卡',
@@ -282,7 +252,9 @@ function buildPage() {
   segStatEl.click();
   ok('统计卡里有模型用时', panelStatEl.textContent.indexOf('模型用时') >= 0);
   ok('统计卡里没有缓存命中', panelStatEl.textContent.indexOf('缓存命中') < 0);
-  ok('统计卡里有会话标题', panelStatEl.textContent.indexOf('T') >= 0);
+  // 以前断言的是 indexOf('T')，而卡片里"TTFT"就带 T —— 等于什么都没验
+  ok('统计卡里有会话标题', panelStatEl.textContent.indexOf('会话标题ABC') >= 0,
+     panelStatEl.textContent.slice(0, 60));
 
   // ---- 卡片不越界 ----
   // 真实页面有很长的消息列表，composer 常在页面底部。断言前必须先把分段
@@ -335,6 +307,34 @@ function buildPage() {
   ok('无模型名时隐藏', getComputedStyle(footModel).display === 'none', getComputedStyle(footModel).display);
   api2.update(base);
   segStatEl.click();
+
+  // 记录同版本再注入前的状态（下一段脚本里断言）
+  window.__T.apiBeforeReinject = window.__MIMO_METER__;
+  window.__T.hostBeforeReinject = document.getElementById('mimo-meter-host');
+  segTokEl.click();
+  window.__T.openBeforeReinject = segTokEl.getAttribute('aria-expanded');
+</script>
+
+<script>${second}</script>
+
+<script>
+  /* 同版本再注入一次（模拟 did-navigate-in-page / did-finish-load）：
+     必须原样返回，不能销毁重建 —— 否则开着的卡片会被关掉，
+     而且整段源码白白重跑一遍。 */
+  ok('同版本重复注入不重建 host',
+     document.getElementById('mimo-meter-host') === window.__T.hostBeforeReinject);
+  ok('同版本重复注入复用 api 实例',
+     window.__MIMO_METER__ === window.__T.apiBeforeReinject);
+  /* 用 document.querySelector 取「当前活着的那个」分段：
+     用捕获的 segTokEl 会误判 —— 重建后旧元素被摘下但属性还留着 true。 */
+  ok('同版本重复注入保留开合状态',
+     window.__T.openBeforeReinject === 'true' &&
+       document.querySelector('#mimo-meter-host .mm-seg-tok').getAttribute('aria-expanded') === 'true',
+     window.__T.openBeforeReinject + ' → ' +
+       document.querySelector('#mimo-meter-host .mm-seg-tok').getAttribute('aria-expanded'));
+  ok('同版本重复注入后仍只有一个 host',
+     document.querySelectorAll('#mimo-meter-host').length === 1);
+  segTokEl.click();
 
   // ---- destroy 后彻底干净 ----
   api2.update(base);

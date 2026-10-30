@@ -5,7 +5,7 @@
 **给 MiMo Desktop 加一条常驻状态栏：Token 用量 · 步数 · 缓存命中率 · 费用**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.3-green.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-2.0.4-green.svg)](../../releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#-平台支持)
 [![No Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen.svg)](#-隐私与安全)
 
@@ -130,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 正常启动应包含：
 
 ```
-booted {"plugin":"2.0.3","overlay":"2.0.3","platform":"darwin",...}
+booted {"plugin":"2.0.4","overlay":"2.0.4","platform":"darwin",...}
 ```
 
 **卸载**
@@ -239,8 +239,10 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge    # 连日志�
 > 漏掉 `reasoning` 会导致每个会话都少算（v1.6.4 修过一次）。
 
 > [!NOTE]
-> **费用为 0 时显示 `¥0.000`，不再整行隐藏**。v2.0.1 起区分「没有数据」和
-> 「确实是 0 元」——后者（免费额度、本地模型）以前会被误当成缺失值。
+> **费用为 0 时显示 `¥0.000`，不再整行隐藏**。v2.0.1 起不再把「确实是 0 元」
+> （免费额度、本地模型）当成缺失值丢掉。
+> 注意 SQL 里是 `COALESCE(SUM(...),0)`，「没有 cost 字段」也会变成 0，
+> 所以面板上「缺失」和「0 元」其实分不出来，一律显示金额。
 
 ### 刷新策略
 
@@ -423,7 +425,7 @@ env -u ELECTRON_RUN_AS_NODE open -a 'Xiaomi MiMo'
 | `engine-config/mimocode.jsonc` | 追加一条登记（保留已有条目） |
 | 日志目录 | 运行日志 + `metrics.json`（TTFT/TPS 累计） |
 
-**审计建议**：全部逻辑在 `src/` 三个文件、约 2000 行，无压缩无混淆，可直接阅读。
+**审计建议**：全部逻辑在 `src/` 三个文件、约 2500 行，无压缩无混淆，可直接阅读。
 
 > 日志与 `metrics.json` 默认**不随卸载删除**（便于排查残留问题）。
 > 需要一起清掉请用 `./uninstall.sh --purge` 或 `uninstall.ps1 -Purge`。
@@ -440,7 +442,7 @@ scripts/
   jsonc_edit.ps1          同上（Windows / PowerShell）
   test_jsonc_edit.py      配置编辑回归测试（48 项）
   test_jsonc_edit.ps1     配置编辑回归测试（53 项）
-  test_overlay.mjs        浮层行为测试（17 项，需 Chrome）
+  test_overlay.mjs        浮层行为测试（58 项，需 Chrome）
   check-version.mjs       版本号一致性检查
 install.sh / uninstall.sh       macOS
 install.ps1 / uninstall.ps1     Windows
@@ -468,12 +470,7 @@ docs/images/                    截图
 欢迎 issue 与 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ```bash
-node --check src/mimo-meter.mjs
-node --check src/overlay.js
-bash -n install.sh && bash -n uninstall.sh
-node scripts/check-version.mjs
-python3 scripts/test_jsonc_edit.py
-node scripts/test_overlay.mjs        # 需要 Chrome
+./scripts/check.sh                   # 一条命令跑完全部检查
 ```
 
 ## 📄 License
