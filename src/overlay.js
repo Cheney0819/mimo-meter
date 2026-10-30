@@ -333,7 +333,6 @@
     var prevMode = host.dataset.mode;
     var wrap = pickComposerWrap();
     if (wrap) {
-      host.dataset.layout = "inline";
       host.dataset.mode = "inline";
       var disc = wrap.querySelector(".composer-ai-disclaimer");
       if (disc) {
@@ -517,7 +516,6 @@
 
   function setOpen(which) {
     state.which = which || null;
-    host.classList.toggle("mm-open", !!state.which);
     host.classList.toggle("mm-open-tok", state.which === "tok");
     host.classList.toggle("mm-open-stat", state.which === "stat");
     segTok.setAttribute("aria-expanded", state.which === "tok" ? "true" : "false");
