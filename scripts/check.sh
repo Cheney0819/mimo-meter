@@ -13,13 +13,18 @@ cd "$ROOT" || exit 1
 FAIL=0
 SKIP=0
 
+# 日志放临时目录：固定 /tmp/mm-*.log 时两个终端同时跑会互相覆盖，
+# 失败时看到的可能是另一次运行的输出。
+LOGDIR="$(mktemp -d)"
+trap 'rm -rf "$LOGDIR"' EXIT
+
 step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
 skip() { printf '  \033[33m–\033[0m %s\n' "$*"; SKIP=$((SKIP+1)); }
 
 step "1/8 语法检查"
-for f in src/mimo-meter.mjs src/overlay.js scripts/check-version.mjs scripts/test_overlay.mjs; do
+for f in src/mimo-meter.mjs src/overlay.js scripts/check-version.mjs scripts/test_overlay.mjs scripts/test-sql.mjs; do
   if node --check "$f" 2>/dev/null; then ok "$f"; else bad "$f 语法错误"; fi
 done
 for f in install.sh uninstall.sh scripts/check.sh; do
@@ -43,10 +48,10 @@ done
 
 step "4/8 配置编辑回归（Python）"
 if command -v python3 >/dev/null 2>&1; then
-  if python3 scripts/test_jsonc_edit.py >/tmp/mm-jsonc-py.log 2>&1; then
-    ok "$(tail -1 /tmp/mm-jsonc-py.log)"
+  if python3 scripts/test_jsonc_edit.py >"$LOGDIR/jsonc-py.log" 2>&1; then
+    ok "$(tail -1 "$LOGDIR/jsonc-py.log")"
   else
-    bad "见 /tmp/mm-jsonc-py.log"
+    bad "见 $LOGDIR/jsonc-py.log"
   fi
 else
   skip "没有 python3"
@@ -54,38 +59,38 @@ fi
 
 step "5/8 配置编辑回归（PowerShell）"
 if command -v pwsh >/dev/null 2>&1; then
-  if pwsh -NoLogo -NoProfile -File scripts/test_jsonc_edit.ps1 >/tmp/mm-jsonc-ps.log 2>&1; then
-    ok "$(tail -1 /tmp/mm-jsonc-ps.log)"
+  if pwsh -NoLogo -NoProfile -File scripts/test_jsonc_edit.ps1 >"$LOGDIR/jsonc-ps.log" 2>&1; then
+    ok "$(tail -1 "$LOGDIR/jsonc-ps.log")"
   else
-    bad "见 /tmp/mm-jsonc-ps.log"
+    bad "见 $LOGDIR/jsonc-ps.log"
   fi
 elif command -v powershell >/dev/null 2>&1; then
-  if powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_jsonc_edit.ps1 >/tmp/mm-jsonc-ps.log 2>&1; then
-    ok "$(tail -1 /tmp/mm-jsonc-ps.log)"
+  if powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_jsonc_edit.ps1 >"$LOGDIR/jsonc-ps.log" 2>&1; then
+    ok "$(tail -1 "$LOGDIR/jsonc-ps.log")"
   else
-    bad "见 /tmp/mm-jsonc-ps.log"
+    bad "见 $LOGDIR/jsonc-ps.log"
   fi
 else
   skip "没有 pwsh/powershell（Windows 相关改动请在有 PowerShell 的机器上验证）"
 fi
 
 step "6/8 浮层行为测试"
-if node scripts/test_overlay.mjs >/tmp/mm-overlay.log 2>&1; then
-  ok "$(tail -1 /tmp/mm-overlay.log)"
+if node scripts/test_overlay.mjs >"$LOGDIR/overlay.log" 2>&1; then
+  ok "$(tail -1 "$LOGDIR/overlay.log")"
 else
-  if grep -q "找不到 Chrome" /tmp/mm-overlay.log 2>/dev/null; then
+  if grep -q "找不到 Chrome" "$LOGDIR/overlay.log" 2>/dev/null; then
     skip "没有 Chrome/Chromium"
   else
-    bad "见 /tmp/mm-overlay.log"
+    bad "见 $LOGDIR/overlay.log"
   fi
 fi
 
 step "7/8 统计口径回归（SQL）"
 # 有真机库就用真的，没有就用合成库；两者都应通过
-if node scripts/test-sql.mjs >/tmp/mm-sql.log 2>&1; then
-  ok "$(tail -1 /tmp/mm-sql.log)"
+if node scripts/test-sql.mjs >"$LOGDIR/sql.log" 2>&1; then
+  ok "$(tail -1 "$LOGDIR/sql.log")"
 else
-  bad "见 /tmp/mm-sql.log"
+  bad "见 $LOGDIR/sql.log"
 fi
 
 step "8/8 未跟踪的敏感文件"

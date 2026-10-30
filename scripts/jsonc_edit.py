@@ -143,16 +143,6 @@ def is_own(spec):
     return bool(spec) and any(m in spec for m in OWN_MARKERS)
 
 
-def is_valid_entry(entry):
-    """合法条目只有两种形态："spec" 或 ["spec", {options}]。
-    其它形态（数字、对象、空数组……）引擎本来也加载不了，直接丢掉更安全。"""
-    if isinstance(entry, str):
-        return bool(entry.strip())
-    if isinstance(entry, list) and entry and isinstance(entry[0], str):
-        return bool(entry[0].strip())
-    return False
-
-
 # ----------------------------------------------------------------- 文件读写
 
 def read_config(path):
