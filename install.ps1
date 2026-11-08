@@ -70,7 +70,12 @@ trap {
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path $here "src"
 $editor = Join-Path $here "scripts\jsonc_edit.ps1"
-$cfg = Join-Path $env:APPDATA "Xiaomi MiMo\engine-config"
+# 26.1106.61620 起 app 把 userData 挪进了子目录，engine-config 跟着搬家；
+# 老版本在顶层。两处都试，新布局优先。
+$base = Join-Path $env:APPDATA "Xiaomi MiMo"
+$newCfg = Join-Path $base "Xiaomi MiMo\engine-config"
+$oldCfg = Join-Path $base "engine-config"
+$cfg = if (Test-Path -LiteralPath $newCfg) { $newCfg } else { $oldCfg }
 
 Write-Host "mimo-meter 安装器" -ForegroundColor Cyan
 Write-Host ("  PowerShell 版本：" + $PSVersionTable.PSVersion.ToString())
@@ -78,7 +83,7 @@ Write-Host ("  脚本目录：" + $here)
 Write-Host ""
 
 if (-not (Test-Path -LiteralPath $cfg)) {
-  Fail ("找不到 engine-config 目录：`n  " + $cfg + "`n请先启动一次 MiMo Desktop（Windows 版），让它生成运行时，再重跑本脚本。")
+  Fail ("找不到 engine-config 目录，试过：`n  " + $newCfg + "`n  " + $oldCfg + "`n请先启动一次 MiMo Desktop（Windows 版），让它生成运行时，再重跑本脚本。")
 }
 
 foreach ($f in @("mimo-meter.mjs", "overlay.js", "overlay.css")) {

@@ -120,6 +120,32 @@ function buildPage() {
   ok('无 sid 时扫描 headerTexts', Array.isArray(p2.headerTexts) && p2.headerTexts.length > 0,
      JSON.stringify(p2.headerTexts));
 
+  // ---- DOM 兜底：桥挂掉时也要能定位会话 ----
+  // 页面里带 data-session-id（新版 app 的会话容器就是这么标的）
+  var wrapEl = document.querySelector('.composer-wrap');
+  wrapEl.setAttribute('data-session-id', 'ses_DOMFALLBACK000001');
+  /* domSid 有 3s 缓存：先等过一次，再探（真实运行时也是 900ms 一轮） */
+  var waitProbe = function () {
+    var t0 = Date.now();
+    while (Date.now() - t0 < 3100) {}
+    return api2.probe();
+  };
+  var p3 = waitProbe();
+  ok('无桥信号时 domSid 从 data-session-id 抓到', p3.domSid === 'ses_DOMFALLBACK000001', p3.domSid);
+  ok('有 sid 时不返回 domSid（省一次 DOM 扫描）', p1.domSid === null, JSON.stringify(p1.domSid));
+
+  // 首页不该返回 domSid（首页上不会有当前会话）
+  var p4 = api2.probe();
+  ok('会话页 domSid 稳定', p4.domSid === 'ses_DOMFALLBACK000001', p4.domSid);
+
+  // ---- selfCheck：诊断接口 ----
+  var sc = api2.selfCheck();
+  ok('selfCheck 报告版本', sc.version === '9.9.9', sc.version);
+  ok('selfCheck 报告已挂载', sc.attached === true);
+  ok('selfCheck 报告视图', sc.view === 'thread', sc.view);
+  ok('selfCheck 报告 domSid', sc.domSid === 'ses_DOMFALLBACK000001', sc.domSid);
+  wrapEl.removeAttribute('data-session-id');
+
   // ---- 金额渲染 ----
   function moneyOf(payload) {
     api2.update(payload);

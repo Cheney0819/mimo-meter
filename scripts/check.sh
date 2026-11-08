@@ -23,18 +23,18 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
 skip() { printf '  \033[33m–\033[0m %s\n' "$*"; SKIP=$((SKIP+1)); }
 
-step "1/8 语法检查"
-for f in src/mimo-meter.mjs src/overlay.js scripts/check-version.mjs scripts/test_overlay.mjs scripts/test-sql.mjs; do
+step "1/9 语法检查"
+for f in src/mimo-meter.mjs src/overlay.js scripts/check-version.mjs scripts/test_overlay.mjs scripts/test-sql.mjs scripts/test-roots.mjs; do
   if node --check "$f" 2>/dev/null; then ok "$f"; else bad "$f 语法错误"; fi
 done
 for f in install.sh uninstall.sh scripts/check.sh; do
   if bash -n "$f" 2>/dev/null; then ok "$f"; else bad "$f 语法错误"; fi
 done
 
-step "2/8 版本号一致性"
+step "2/9 版本号一致性"
 if node scripts/check-version.mjs; then ok "版本号一致"; else bad "版本号不一致"; fi
 
-step "3/8 PowerShell 文件必须带 UTF-8 BOM"
+step "3/9 PowerShell 文件必须带 UTF-8 BOM"
 # PS 5.1 读无 BOM 的 UTF-8 文件会按 ANSI(GBK) 解码，中文全变乱码。
 bom_bad=0
 for f in install.ps1 uninstall.ps1 scripts/jsonc_edit.ps1 scripts/test_jsonc_edit.ps1; do
@@ -46,7 +46,7 @@ for f in install.ps1 uninstall.ps1 scripts/jsonc_edit.ps1 scripts/test_jsonc_edi
   fi
 done
 
-step "4/8 配置编辑回归（Python）"
+step "4/9 配置编辑回归（Python）"
 if command -v python3 >/dev/null 2>&1; then
   if python3 scripts/test_jsonc_edit.py >"$LOGDIR/jsonc-py.log" 2>&1; then
     ok "$(tail -1 "$LOGDIR/jsonc-py.log")"
@@ -57,7 +57,7 @@ else
   skip "没有 python3"
 fi
 
-step "5/8 配置编辑回归（PowerShell）"
+step "5/9 配置编辑回归（PowerShell）"
 if command -v pwsh >/dev/null 2>&1; then
   if pwsh -NoLogo -NoProfile -File scripts/test_jsonc_edit.ps1 >"$LOGDIR/jsonc-ps.log" 2>&1; then
     ok "$(tail -1 "$LOGDIR/jsonc-ps.log")"
@@ -74,7 +74,7 @@ else
   skip "没有 pwsh/powershell（Windows 相关改动请在有 PowerShell 的机器上验证）"
 fi
 
-step "6/8 浮层行为测试"
+step "6/9 浮层行为测试"
 if node scripts/test_overlay.mjs >"$LOGDIR/overlay.log" 2>&1; then
   ok "$(tail -1 "$LOGDIR/overlay.log")"
 else
@@ -85,7 +85,7 @@ else
   fi
 fi
 
-step "7/8 统计口径回归（SQL）"
+step "7/9 统计口径回归（SQL）"
 # 有真机库就用真的，没有就用合成库；两者都应通过
 if node scripts/test-sql.mjs >"$LOGDIR/sql.log" 2>&1; then
   ok "$(tail -1 "$LOGDIR/sql.log")"
@@ -93,7 +93,16 @@ else
   bad "见 $LOGDIR/sql.log"
 fi
 
-step "8/8 未跟踪的敏感文件"
+step "8/9 数据目录探测回归"
+# MiMo 升级会把 userData 挪进子目录（26.1106.61620 就是），
+# 这类问题用假 HOME 跑一遍就够，不要用真机试。
+if node scripts/test-roots.mjs >"$LOGDIR/roots.log" 2>&1; then
+  ok "$(tail -1 "$LOGDIR/roots.log")"
+else
+  bad "见 $LOGDIR/roots.log"
+fi
+
+step "9/9 未跟踪的敏感文件"
 for f in metrics.json mimo-meter.log; do
   if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
     bad "$f 被提交进仓库了"

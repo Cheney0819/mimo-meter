@@ -5,7 +5,7 @@
 **给 MiMo Desktop 加一条常驻状态栏：Token 用量 · 步数 · 缓存命中率 · 费用**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.0.4-green.svg)](../../releases)
+[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](../../releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#-平台支持)
 [![No Telemetry](https://img.shields.io/badge/telemetry-none-brightgreen.svg)](#-隐私与安全)
 
@@ -64,7 +64,7 @@ MiMo Desktop 不显示一个会话烧了多少 token、缓存命中了多少、�
 
 | 项目 | 要求 |
 | --- | --- |
-| MiMo Desktop | 已安装并能正常启动（实测 26.1023.231655） |
+| MiMo Desktop | 已安装并能正常启动（实测 26.1023.231655 / 26.1106.61620） |
 | 操作系统 | macOS / Windows（见[平台支持](#-平台支持)） |
 | 权限 | 无需管理员 / 无需 sudo |
 | 依赖 | 运行插件**零依赖**（只用 Electron + Node 标准库）。安装脚本需要 `python3` 或 `pwsh`/PowerShell 来安全地改 `mimocode.jsonc`；macOS 若没有可 `xcode-select --install` |
@@ -174,6 +174,9 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Purge    # 连日志�
 | `booted {"platform":"win32",...}` | 插件加载成功 |
 | `bridge module not found` | runtime 目录结构变化，请附日志提 issue |
 | 完全没有日志文件 | 插件没被加载，检查 `mimocode.jsonc` 里的 `file://` 路径 |
+| `bridge module not found` 反复出现 | runtime 目录找不到。日志里 `runtimeDirs` 会列出所有探过的路径 |
+| `selfcheck (degraded) {...}` | 启动后自检发现某一环坏了，`bridge` / `db` / `windows` 字段直接指出是哪一环 |
+| 状态条有元素但看不见 | 前端在控制台跑 `__MIMO_METER__.selfCheck()`，看 `idle` / `barDisplay` / `hostRect` |
 | 脚本报错里全是乱码 | `.ps1` 文件缺少 UTF-8 BOM（PowerShell 5.1 会按 GBK 解码）。请用仓库原版文件 |
 
 另外确认 `%APPDATA%\Xiaomi MiMo\engine-config` 存在（说明 userData 路径正确）。
@@ -442,14 +445,16 @@ scripts/
   jsonc_edit.ps1          同上（Windows / PowerShell）
   test_jsonc_edit.py      配置编辑回归测试（48 项）
   test_jsonc_edit.ps1     配置编辑回归测试（53 项）
-  test_overlay.mjs        浮层行为测试（58 项，需 Chrome）
+  test_overlay.mjs        浮层行为测试（65 项，需 Chrome）
+  test-roots.mjs          数据目录探测回归（假 HOME，覆盖 app 升级换目录）
+  test-sql.mjs            统计口径回归（真机库或合成库）
   check-version.mjs       版本号一致性检查
 install.sh / uninstall.sh       macOS
 install.ps1 / uninstall.ps1     Windows
 docs/images/                    截图
 ```
 
-安装后落点：
+安装后落点（`<userData>` 见下方说明）：
 
 ```
 <userData>/engine-config/mimo-meter.mjs
@@ -457,6 +462,13 @@ docs/images/                    截图
 <userData>/engine-config/mimo-meter-overlay.css
 <userData>/engine-config/mimocode.jsonc          ← plugin 数组登记
 ```
+
+> [!IMPORTANT]
+> **`<userData>` 在 26.1106.61620 之后多了一层**：
+> `~/Library/Application Support/Xiaomi MiMo` → `…/Xiaomi MiMo/Xiaomi MiMo`
+> （`engine-config` 与 `runtime-res` 一起搬走）。安装/卸载脚本与插件都会**两处都找**，
+> 新布局优先；插件还会向上多探两层，并在启动 8 秒后自检，路径不对会在日志里
+> 打 `selfcheck (degraded)`。
 
 ## 🗺 Roadmap
 

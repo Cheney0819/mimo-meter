@@ -9,7 +9,7 @@
  * 幂等：同版本重复注入直接返回（不动 DOM、不丢开合状态），版本变了才拆除重建。
  */
 (function () {
-  var VERSION = "2.0.4";
+  var VERSION = "2.1.0";
   var HOST_ID = "mimo-meter-host";
 
   /* 幂等：同版本 + host 还在 → 什么都不做，直接返回。
@@ -278,6 +278,57 @@
         st.bottom = "16px";
       }
     }
+  }
+
+  /* ---------------- DOM 里的会话 id（最后一道兜底） ----------------
+     桥（主进程 hook IPC 注册表）是主信号，但 app 大版本升级会换桥模块 / 改
+     handler 注册方式，那时桥整个抓不到 sid。页面自己其实到处都带着会话 id：
+     data-session-id 属性、/session/ses_xxx 链接、以及 React 元素上的 props。
+     这里只做「读」，不改 DOM；3s 缓存一次，probe 每 900ms 才读一次缓存值。
+     顺序是有意的：属性/链接 > 首屏文本 > （不给 React 内部猜）。 */
+  var SID_RX = /ses_[A-Za-z0-9_-]{8,}/;
+  var domSidCache = { at: 0, sid: null };
+
+  function scanDomSid() {
+    /* 1) 任何带 ses_ 前缀的属性值（data-session-id / data-sid / href …） */
+    try {
+      var nodes = document.querySelectorAll("[data-session-id],[data-sid],[data-session],[href*='ses_']");
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var vals = [
+          el.getAttribute("data-session-id"),
+          el.getAttribute("data-sid"),
+          el.getAttribute("data-session"),
+          el.getAttribute("href"),
+          el.getAttribute("id"),
+        ];
+        for (var j = 0; j < vals.length; j++) {
+          var m = vals[j] && SID_RX.exec(vals[j]);
+          if (m) return m[0];
+        }
+      }
+    } catch (e) {}
+    /* 2) URL（有些页面会把会话挂在 hash / query 上） */
+    try {
+      var mu = SID_RX.exec(location.hash + location.search);
+      if (mu) return mu[0];
+    } catch (e) {}
+    /* 3) 首屏文本里裸露的 ses_（诊断面板 / 复制链接场景）；
+       只扫 body 前 4000 个字符，长会话不会拖慢。 */
+    try {
+      var txt = (document.body && document.body.innerText) || "";
+      var mt = SID_RX.exec(txt.slice(0, 4000));
+      if (mt) return mt[0];
+    } catch (e) {}
+    return null;
+  }
+
+  function domSid(view) {
+    if (view === "home") return null;
+    var now = Date.now();
+    if (now - domSidCache.at < 3000) return domSidCache.sid;
+    domSidCache = { at: now, sid: scanDomSid() };
+    return domSidCache.sid;
   }
 
   /* 顶栏文本扫描：只在「会话页 + 还没有 sid」时才需要（桥全挂时的最后兜底）。
@@ -942,6 +993,33 @@
         if (typeof sid === "string" && sid) window.__mimoMeterSid = sid;
       } catch (e) {}
     },
+    /* 自检：给「状态条不出现」这类问题一个能一句话定位的东西。
+       主进程 logs 里 console 会被 Electron 收走，所以这里返回对象而不是打印。 */
+    selfCheck: function () {
+      var wrap = pickComposerWrap();
+      var out = {
+        version: VERSION,
+        mode: host.dataset.mode || null,
+        idle: host.classList.contains("mm-idle"),
+        attached: host.isConnected,
+        parent: host.parentElement ? host.parentElement.className || host.parentElement.tagName : null,
+        view: currentView(),
+        hasData: !!state.data,
+        dataSid: state.data ? state.data.sid : null,
+        domSid: domSid(currentView()),
+        hostRect: null,
+        barDisplay: null,
+        wrapFound: !!wrap,
+        disclaimer: !!(wrap && wrap.querySelector(".composer-ai-disclaimer")),
+      };
+      try {
+        var r = host.getBoundingClientRect();
+        out.hostRect = { w: Math.round(r.width), h: Math.round(r.height), top: Math.round(r.top) };
+        var bar = host.querySelector(".mm-bar");
+        out.barDisplay = bar ? getComputedStyle(bar).display : null;
+      } catch (e) {}
+      return out;
+    },
     destroy: destroy,
     probe: function () {
       var view = currentView();
@@ -962,6 +1040,8 @@
         version: VERSION,
         sid: sid,
         view: view,
+        /* 桥没抓到时主进程用的兜底信号；有 sid 时不必算（省一次 DOM 扫描） */
+        domSid: sid ? null : domSid(view),
         headerTexts: texts,
         open: !!state.which,
         openPanel: state.which,

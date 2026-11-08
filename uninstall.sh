@@ -8,7 +8,10 @@ set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 EDITOR="$HERE/scripts/jsonc_edit.py"
-CFG="$HOME/Library/Application Support/Xiaomi MiMo/engine-config"
+BASE="$HOME/Library/Application Support/Xiaomi MiMo"
+# 26.1106.61620 起 userData 多了一层子目录，两处都要看
+NEW_CFG="$BASE/Xiaomi MiMo/engine-config"
+CFG="$BASE/engine-config"
 STATE="$HOME/Library/Logs/mimo-meter"
 
 PURGE=0
@@ -33,23 +36,26 @@ for cand in python3 python; do
   fi
 done
 
-if [ -n "$PY" ] && [ -f "$EDITOR" ]; then
-  set +e
-  "$PY" "$EDITOR" uninstall "$CFG"
-  RC=$?
-  set -e
-  if [ "$RC" -ne 0 ]; then
-    echo "配置清理失败（退出码 ${RC}），配置文件未被破坏。插件文件仍未删除。" >&2
-    exit "$RC"
+for root in "$NEW_CFG" "$CFG"; do
+  [ -d "$root" ] || continue
+  if [ -n "$PY" ] && [ -f "$EDITOR" ]; then
+    set +e
+    "$PY" "$EDITOR" uninstall "$root"
+    RC=$?
+    set -e
+    if [ "$RC" -ne 0 ]; then
+      echo "配置清理失败（退出码 ${RC}），配置文件未被破坏。插件文件仍未删除。" >&2
+      exit "$RC"
+    fi
+  else
+    echo "警告：找不到 python3 或 scripts/jsonc_edit.py，跳过 plugin 登记清理。" >&2
+    echo "      请手动从 mimocode.jsonc 的 plugin 数组里删掉 mimo-meter 那一条。" >&2
   fi
-else
-  echo "警告：找不到 python3 或 scripts/jsonc_edit.py，跳过 plugin 登记清理。" >&2
-  echo "      请手动从 mimocode.jsonc 的 plugin 数组里删掉 mimo-meter 那一条。" >&2
-fi
 
-rm -f "$CFG/mimo-meter.mjs" "$CFG/mimo-meter-overlay.js" "$CFG/mimo-meter-overlay.css"
-rm -f "$CFG/mimo-stats.mjs" "$CFG/mimo-stats-overlay.js" "$CFG/mimo-stats-overlay.css"
-echo "已删除插件文件。"
+  rm -f "$root/mimo-meter.mjs" "$root/mimo-meter-overlay.js" "$root/mimo-meter-overlay.css"
+  rm -f "$root/mimo-stats.mjs" "$root/mimo-stats-overlay.js" "$root/mimo-stats-overlay.css"
+  echo "已删除插件文件：$root"
+done
 
 if [ "$PURGE" -eq 1 ]; then
   if [ -d "$STATE" ]; then

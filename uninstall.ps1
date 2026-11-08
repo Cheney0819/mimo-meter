@@ -57,7 +57,13 @@ trap {
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $editor = Join-Path $here "scripts\jsonc_edit.ps1"
-$cfg = Join-Path $env:APPDATA "Xiaomi MiMo\engine-config"
+# 26.1106.61620 起 userData 多了一层子目录，两处都要清理
+$base = Join-Path $env:APPDATA "Xiaomi MiMo"
+$cfgList = @(
+  (Join-Path $base "Xiaomi MiMo\engine-config"),
+  (Join-Path $base "engine-config")
+) | Where-Object { Test-Path -LiteralPath $_ }
+if (-not $cfgList) { $cfgList = @(Join-Path $base "engine-config") }
 $state = Join-Path $env:LOCALAPPDATA "mimo-meter"
 
 Write-Host "mimo-meter 卸载器" -ForegroundColor Cyan
@@ -72,13 +78,15 @@ if (Test-Path -LiteralPath $editor) {
   }
 
   if (Get-Command Uninstall-MimoMeterPlugin -ErrorAction SilentlyContinue) {
-    try {
-      $rc = Uninstall-MimoMeterPlugin $cfg
-    } catch {
-      Fail ("清理配置时出错：`n  " + $_.Exception.Message + "`n配置文件未被破坏。")
-    }
-    if ($rc -ne 0) {
-      Fail ("配置清理失败（退出码 " + $rc + "），配置文件未被破坏。插件文件仍未删除。") $rc
+    foreach ($cfg in $cfgList) {
+      try {
+        $rc = Uninstall-MimoMeterPlugin $cfg
+      } catch {
+        Fail ("清理配置时出错：`n  " + $_.Exception.Message + "`n配置文件未被破坏。")
+      }
+      if ($rc -ne 0) {
+        Fail ("配置清理失败（退出码 " + $rc + "），配置文件未被破坏。插件文件仍未删除。") $rc
+      }
     }
   } else {
     Write-Host "警告：jsonc_edit.ps1 里没有 Uninstall-MimoMeterPlugin 函数。" -ForegroundColor Yellow
@@ -89,17 +97,19 @@ if (Test-Path -LiteralPath $editor) {
   Write-Host "      请手动从 mimocode.jsonc 的 plugin 数组里删掉 mimo-meter 那一条。"
 }
 
-foreach ($name in @(
-    "mimo-meter.mjs",
-    "mimo-meter-overlay.js",
-    "mimo-meter-overlay.css",
-    "mimo-stats.mjs",
-    "mimo-stats-overlay.js",
-    "mimo-stats-overlay.css"
-  )) {
-  Remove-Item (Join-Path $cfg $name) -Force -ErrorAction SilentlyContinue
+foreach ($cfg in $cfgList) {
+  foreach ($name in @(
+      "mimo-meter.mjs",
+      "mimo-meter-overlay.js",
+      "mimo-meter-overlay.css",
+      "mimo-stats.mjs",
+      "mimo-stats-overlay.js",
+      "mimo-stats-overlay.css"
+    )) {
+    Remove-Item (Join-Path $cfg $name) -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host ("已删除插件文件：" + $cfg)
 }
-Write-Host "已删除插件文件。"
 
 if ($Purge) {
   if (Test-Path -LiteralPath $state) {

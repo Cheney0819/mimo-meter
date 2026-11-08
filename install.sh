@@ -16,13 +16,28 @@ set -euo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/src"
 EDITOR="$HERE/scripts/jsonc_edit.py"
-CFG="$HOME/Library/Application Support/Xiaomi MiMo/engine-config"
-
 die() { echo "错误：$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- 找数据根
+# 26.1106.61620 起 app 把 userData 挪进了子目录（Xiaomi MiMo/Xiaomi MiMo），
+# engine-config / runtime-res 全跟着搬家；老版本在顶层。
+# 这里两处都试，谁有 engine-config 用谁，新布局优先。
+find_cfg() {
+  local base="$HOME/Library/Application Support/Xiaomi MiMo"
+  local new="$base/Xiaomi MiMo/engine-config"
+  local old="$base/engine-config"
+  if [ -d "$new" ]; then echo "$new"; return 0; fi
+  if [ -d "$old" ]; then echo "$old"; return 0; fi
+  echo "$old"
+}
+
+CFG="$(find_cfg)"
 
 # ---------------------------------------------------------------- 环境检查
 
-[ -d "$CFG" ] || die "找不到 engine-config 目录：$CFG
+[ -d "$CFG" ] || die "找不到 engine-config 目录，试过：
+  $HOME/Library/Application Support/Xiaomi MiMo/Xiaomi MiMo/engine-config
+  $HOME/Library/Application Support/Xiaomi MiMo/engine-config
 请先启动一次 MiMo Desktop，让它生成运行时，再重跑本脚本。"
 
 for f in mimo-meter.mjs overlay.js overlay.css; do

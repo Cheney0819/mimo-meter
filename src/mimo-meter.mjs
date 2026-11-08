@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const VERSION = "2.0.4";
+const VERSION = "2.1.0";
 const TICK_MS = 400;
 const SID_POLL_MS = 900;
 const DB_RETRY_MS = 5000;      // 打不开数据库时的重试间隔
@@ -27,17 +27,85 @@ const LOG_MAX_BYTES = 1_000_000;
 /* 桥信号在这么久之内出现过，就不采信渲染进程的 fetch 兜底
    （fetch 可能是预取/后台请求，采信了会串号） */
 const BRIDGE_TRUST_MS = 8000;
+/* 桥没挂上时的重试间隔。app 升级换了 userData 目录 / 重启 runtime 时，
+   启动瞬间可能还看不到 runtime-res，几秒后再探一次就正常了。 */
+const BRIDGE_RETRY_MS = 10_000;
+/* 页面探活里读到的 DOM 信号最多保留多久（之后视为已在别的页面） */
+const DOM_TRUST_MS = 15_000;
 
 const HOME = os.homedir();
 const PLATFORM = process.platform; // darwin / win32 / linux
 
-/* Electron userData：mac ~/Library/Application Support、win %APPDATA%、linux ~/.config */
-function appDataRoot() {
-  if (PLATFORM === "win32") {
-    return path.join(process.env.APPDATA || path.join(HOME, "AppData", "Roaming"), "Xiaomi MiMo");
+/* Electron userData 候选目录（按优先级）：
+     mac   ~/Library/Application Support/Xiaomi MiMo
+     win   %APPDATA%\Xiaomi MiMo
+     linux $XDG_CONFIG_HOME/Xiaomi MiMo（老版本）
+   26.1106.61620 起 mac 侧多了一层「Xiaomi MiMo/Xiaomi MiMo」：
+   app 把 userData 挪进了子目录，engine-config / runtime-res 全跟着搬家，
+   而 runtime-res 不再放回顶层。所以这里必须是**候选列表 + 每次重探**，
+   不能像以前那样算一个常量就一直用 —— app 升级不会重装插件。 */
+const APP_DATA_CANDIDATES = [path.join(appDataBase(), "Xiaomi MiMo")];
+
+function appDataBase() {
+  if (PLATFORM === "win32") return process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
+  if (PLATFORM === "darwin") return path.join(HOME, "Library", "Application Support");
+  return process.env.XDG_CONFIG_HOME || path.join(HOME, ".config");
+}
+
+function isDir(p) {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
   }
-  if (PLATFORM === "darwin") return path.join(HOME, "Library", "Application Support", "Xiaomi MiMo");
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, ".config"), "Xiaomi MiMo");
+}
+
+function isFile(p) {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function probeDataRoots() {
+  const out = [];
+  for (const root of [...APP_DATA_CANDIDATES]) {
+    if (!isDir(root)) continue;
+    out.push(root);
+    for (const name of fs.readdirSync(root)) {
+      const sub = path.join(root, name);
+      if (APP_DATA_CANDIDATES.includes(sub)) continue;
+      if (!hasDataChildren(sub)) continue;
+      /* 新布局优先：插到最前面，老目录留着兜底 */
+      APP_DATA_CANDIDATES.unshift(sub);
+      out.unshift(sub);
+    }
+  }
+  return out;
+}
+
+function hasDataChildren(p) {
+  if (!isDir(p)) return false;
+  for (const n of ["engine-config", "runtime-res", "Local Storage"]) {
+    if (fs.existsSync(path.join(p, n))) return true;
+  }
+  return false;
+}
+
+/* 只用来给用户看 / 写日志：真正的路径一律走 probeDataRoots 的候选集 */
+function appDataRoot() {
+  const roots = probeDataRoots();
+  return roots[roots.length - 1] || APP_DATA_CANDIDATES[0];
+}
+
+/* 在候选里找第一个存在的相对路径（先深后浅：新布局优先） */
+function dataPath(rel) {
+  for (const root of probeDataRoots()) {
+    const p = path.join(root, rel);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 /* 我们自己的日志/指标目录 */
@@ -135,7 +203,6 @@ function dbCandidates() {
   push(path.join(appDataRoot(), "mimocode.db"));
   return out;
 }
-
 const METRICS_FILE = path.join(logRoot(), "metrics.json");
 
 /* 引擎只在事件里给 TTFT / latency，不落库，所以自己记一份按会话聚合的 */
@@ -388,6 +455,8 @@ function computeSessionStats(sid) {
     try {
       steps = s.steps.get(sid)?.steps ?? 0;
     } catch (err) {
+      /* schema 变了会让缓存的语句失效：清掉下次重建，别一直用坏语句 */
+      resetPrepared();
       log("steps query failed", String(err?.message || err));
     }
     /* 步数查不到（老版本库 / schema 变化）时退回助手消息数，
@@ -405,6 +474,7 @@ function computeSessionStats(sid) {
     try {
       toolMs = num(s.tools.get(sid)?.tool_ms);
     } catch (err) {
+      resetPrepared();
       log("tool time query failed", String(err?.message || err));
     }
     const modelMs = num(row.model_ms);
@@ -492,6 +562,12 @@ function engineState() {
     fx: 1 / 0.14,      // 官方人民币价 ÷ 0.14 → 换算回人民币
     showCny: true,
     bridgeHooked: false,
+    bridgeLastTry: 0,    // 上次尝试挂桥的时间（失败后按 BRIDGE_RETRY_MS 退避重试）
+    bridgeInstalled: false, // 桥类已拿到 accessor，等 setter 就行
+    injectedAt: 0,       // 最近一次成功注入的时间（DOM 兜底 / 诊断用）
+    injectBackoffAt: 0,  // 补注入失败后的退避时间戳
+    bridgePingAt: 0,     // refresh 里补探桥的降频时间戳
+    domSidAt: 0,
     lastPush: 0,
     windows: new WeakMap(), // webContents -> { cssKey, version }
     pollTimer: null,
@@ -548,17 +624,27 @@ async function ensureAssets(st) {
 
 function isAppWindow(win) {
   try {
-    const url = win.webContents.getURL() || "";
-    return url.includes("/renderer/static/index.html") || url.startsWith("app://");
+    const wc = win.webContents;
+    if (wc.isDestroyed?.()) return false;
+    const url = wc.getURL() || "";
+    if (url.includes("/renderer/static/index.html") || url.startsWith("app://")) return true;
+    /* runtime 换了 entry 文件名（renderer/static/index.html 由 verified.json 指定）时兜底：
+       主窗口一定有 preload，且 mainFrame 还没导航走。 */
+    if (!url || url === "about:blank") return !!(wc.getLastWebPreferences?.()?.preload);
+    try {
+      return wc.mainFrame?.url === url && !!wc.getLastWebPreferences?.()?.preload;
+    } catch {
+      return false;
+    }
   } catch {
     return false;
   }
 }
 
 async function injectWindow(st, win) {
-  if (!win || win.isDestroyed()) return;
+  if (!win || win.isDestroyed()) return false;
   const wc = win.webContents;
-  if (!isAppWindow(win)) return;
+  if (!isAppWindow(win)) return false;
   try {
     const cur = st.windows.get(wc) || {};
     /* 版本变化要重新插样式；整页导航后由 did-navigate 把这条记录删掉，
@@ -570,9 +656,12 @@ async function injectWindow(st, win) {
       st.windows.set(wc, { ...cur, cssKey: key, version: st.overlayVersion });
     }
     if (st.overlayJs) await wc.executeJavaScript(st.overlayJs, true);
-    st.windows.set(wc, { ...(st.windows.get(wc) || {}), injectedAt: Date.now() });
+    st.injectedAt = Date.now();
+    st.windows.set(wc, { ...(st.windows.get(wc) || {}), injectedAt: st.injectedAt });
+    return true;
   } catch (err) {
     log("inject failed", String(err?.message || err));
+    return false;
   }
 }
 
@@ -622,10 +711,16 @@ async function pollSidOnce(st, e) {
         "window.__MIMO_METER__ ? window.__MIMO_METER__.probe() : null",
         true,
       );
+      /* 浮层没挂上（页面还在加载 / 被导航清掉 / 刚装插件）：补注入一次。
+         连续失败时退避到 3s，避免一直往渲染进程塞脚本。 */
       if (!r || !r.mounted) {
         st.pageSid = null;
         st.pageSidSource = null;
-        await injectWindow(st, win);
+        const now = Date.now();
+        if (!st.injectBackoffAt || now - st.injectBackoffAt > 3000) {
+          st.injectBackoffAt = now;
+          await injectWindow(st, win);
+        }
         continue;
       }
       if (r.view && r.view !== st.pageView) {
@@ -666,8 +761,30 @@ async function pollSidOnce(st, e) {
           await refresh(st, { force: true });
         }
       }
+      /* 最后一道兜底：DOM 里直接抓到的 sid（浮层自己扫的 data-session-id / 链接）。
+         优先级排在桥和 fetch 之后，只在「桥没抓到、页面又在会话页」时生效，
+         而且离开会话页 / 换会话时会立刻作废，不会串号。 */
+      if (r.domSid && st.pageSidSource !== "bridge") {
+        if (r.view === "home" && r.domSid === st.pageSid) {
+          st.pageSid = null;
+          st.pageSidSource = null;
+          st.dirty = true;
+          await refresh(st, { force: true });
+        } else if (r.domSid !== st.pageSid && Date.now() - (st.domSidAt || 0) > 500) {
+          st.domSidAt = Date.now();
+          st.pageSid = r.domSid;
+          st.pageSidSource = "dom";
+          st.pageSidAt = Date.now();
+          st.dirty = true;
+          log("pageSid by dom ->", r.domSid);
+          await refresh(st, { force: true });
+        }
+      }
     } catch {}
   }
+
+  /* 桥没挂上就按 BRIDGE_RETRY_MS 退避重试；挂上后这条不会再走。 */
+  if (!st.bridgeHooked) await ensureBridge(st).catch(() => {});
 }
 
 /* ------------------------------------------------------------------ 实时指标 */
@@ -731,11 +848,28 @@ function sidByTitle(st, texts) {
   try {
     const q = stmts().title;
     for (const text of texts) {
-      if (typeof text !== "string" || !text.trim()) continue;
-      const row = q.get(text.trim());
+      if (typeof text !== "string") continue;
+      /* 顶栏扫描会带出「新会话」「···」这类噪声，太短的不查 */
+      const t = text.trim();
+      if (t.length < 2) continue;
+      const row = q.get(t);
       if (row && row.id) {
         sid = row.id;
         break;
+      }
+      /* 会话标题中文很常见，但新版 app 会把长标题截断成「xxx…」，
+         纯等值匹配就永远命中不了 —— 再按前缀模糊查一次。 */
+      if (t.length >= 4) {
+        const stem = t.replace(/[.…\s]+$/, "");
+        if (stem.length >= 4) {
+          const like = db.prepare(
+            "SELECT id FROM session WHERE title LIKE ? ORDER BY time_updated DESC LIMIT 1",
+          ).get(stem.slice(0, Math.min(17, stem.length)) + "%");
+          if (like && like.id) {
+            sid = like.id;
+            break;
+          }
+        }
       }
     }
   } catch (err) {
@@ -785,11 +919,23 @@ async function refreshOnce(st, { force = false } = {}) {
      openDb 内部有 5s 退避，不会真的每 400ms 撞盘。 */
   if (!db) await openDb();
 
+  /* 桥没挂上时每个 tick 都判一次太频繁，按 500ms 降频 */
+  if (!st.bridgeHooked) {
+    const now = Date.now();
+    if (!st.bridgePingAt || now - st.bridgePingAt > 500) {
+      st.bridgePingAt = now;
+      ensureBridge(st).catch(() => {});
+    }
+  }
+
   const sid = displaySid(st);
   if (!sid) {
-    /* 没有会话：推空载荷，让前端整条隐藏 */
-    if (st.lastPushedSid !== null) {
-      st.lastPushedSid = null;
+    /* 没有会话：推空载荷，让前端整条隐藏。
+       两条兜底路子是异步来的（DOM 信号 / 标题反查），所以这里**每次都推**：
+       以前只在「刚才还有 sid」时推，结果浮层按自己的旧数据继续显示上一个会话。 */
+    st.lastPushedSid = null;
+    if (Date.now() - st.lastPush > 1200) {
+      st.lastPush = Date.now();
       await pushPayload(st, { sid: null, ts: Date.now(), version: VERSION });
     }
     return;
@@ -952,39 +1098,105 @@ function fileContains(file, needle) {
   }
 }
 
+/* 桥模块所在的 runtime 目录候选。
+   26.1106 之前：<userData>/runtime-res/releases/main
+   26.1106 起：  <userData>/Xiaomi MiMo/runtime-res/releases/main
+   再往上几层是给「又套一层目录」的情况留的余量，代价只是几次 existsSync。
+   文件名本身带内容哈希（canvas-client~XXXXXXXX.mjs），每次升级都会变，
+   所以只能按前缀/内容匹配，不能写死。 */
+function runtimeMainDirs() {
+  const out = [];
+  for (const root of probeDataRoots()) {
+    let dir = root;
+    for (let depth = 0; depth < 3; depth++) {
+      const main = path.join(dir, "runtime-res", "releases", "main");
+      if (isDir(main) && !out.includes(main)) out.push(main);
+      dir = path.join(dir, "Xiaomi MiMo");
+    }
+  }
+  /* 兜底：用户目录下所有 mimocode 运行时（极端情况下 userData 不在上面两处） */
+  const extra = [
+    path.join(HOME, "Library", "Application Support", "Xiaomi MiMo", "runtime-res", "releases", "main"),
+  ];
+  for (const p of extra) {
+    if (!out.includes(p) && isDir(p)) out.push(p);
+  }
+  return out;
+}
+
 async function findBridgeModule() {
-  const base = path.join(appDataRoot(), "runtime-res", "releases", "main");
-  if (!fs.existsSync(base)) return null;
+  for (const base of runtimeMainDirs()) {
+    const found = await findBridgeIn(base);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function findBridgeIn(base) {
+  if (!isDir(base)) return null;
   let files;
   try {
     files = fs.readdirSync(base).filter((f) => f.endsWith(".mjs"));
   } catch (err) {
-    log("runtime dir unreadable", String(err?.message || err));
+    log("runtime dir unreadable", base, String(err?.message || err));
     return null;
   }
+  /* 1) 老布局的固定前缀（最快） */
   const direct = files.find((f) => /^canvas-client~.*\.mjs$/.test(f));
-  if (direct) return path.join(base, direct);
-
-  /* 先只扫每个文件的头部（覆盖 99% 情况，启动快得多） */
+  if (direct && fileHeadContains(path.join(base, direct), BRIDGE_MARKER)) {
+    return path.join(base, direct);
+  }
+  /* 2) 文件名换了也能认：先扫头部，再退全文 */
   for (const f of files) {
     const full = path.join(base, f);
     if (fileHeadContains(full, BRIDGE_MARKER)) return full;
   }
-  /* 头部没命中再退回全文扫描，保证行为和旧版一致（不漏） */
   for (const f of files) {
     const full = path.join(base, f);
     if (fileContains(full, BRIDGE_MARKER)) return full;
   }
+  log("bridge marker not in runtime dir", base, { files: files.length });
   return null;
+}
+
+/* 桥类识别（找不到就返回 null，不抛）：
+   老版本导出名是 i；新版本可能改名，所以按「具备 MimoBridge 的形状」找：
+   静态访问器 defaultBridge / 常量 mimo:bridge:invoke / 有 handle + registerHandle。 */
+function isBridgeClass(v) {
+  if (typeof v !== "function") return false;
+  try {
+    if (Object.getOwnPropertyDescriptor(v, "defaultBridge")) return true;
+  } catch {}
+  try {
+    if (v.currentDefault !== undefined) return true;
+  } catch {}
+  return false;
+}
+
+function pickBridgeClass(mod) {
+  const named = [];
+  const shaped = [];
+  for (const v of Object.values(mod)) {
+    if (!isBridgeClass(v)) continue;
+    try {
+      if (Object.getOwnPropertyDescriptor(v, "defaultBridge")) named.push(v);
+      else shaped.push(v);
+    } catch {
+      shaped.push(v);
+    }
+  }
+  return named[0] || shaped[0] || (typeof mod.i === "function" ? mod.i : null);
 }
 
 async function hookBridge(st) {
   if (st.bridgeHooked) return;
   const file = await findBridgeModule();
   if (!file) {
-    log("bridge module not found");
+    st.bridgeLastTry = Date.now();
+    log("bridge module not found", { roots: probeDataRoots() });
     return;
   }
+  st.bridgeLastTry = Date.now();
   let mod;
   try {
     mod = await import(pathToFileURL(file).href);
@@ -992,13 +1204,9 @@ async function hookBridge(st) {
     log("bridge import failed", String(err?.message || err));
     return;
   }
-  const Cls =
-    (typeof mod.i === "function" && mod.i) ||
-    Object.values(mod).find(
-      (v) => typeof v === "function" && Object.getOwnPropertyDescriptor(v, "defaultBridge"),
-    );
+  const Cls = pickBridgeClass(mod);
   if (!Cls) {
-    log("bridge class not found", file);
+    log("bridge class not found", file, { exports: Object.keys(mod).slice(0, 40) });
     return;
   }
   st.bridgeHooked = true;
@@ -1007,6 +1215,7 @@ async function hookBridge(st) {
   try {
     current = Cls.defaultBridge;
   } catch {}
+  /* 已经实例化过就直接包；还没实例化就等 setter */
   if (current) installBridgeHook(st, current);
 
   try {
@@ -1025,6 +1234,7 @@ async function hookBridge(st) {
         }
       },
     });
+    st.bridgeInstalled = true;
     log("bridge accessor hooked", file);
   } catch (err) {
     log("bridge accessor hook failed", String(err?.message || err));
@@ -1042,7 +1252,73 @@ async function hookBridge(st) {
   }
 }
 
+/* 桥没挂上就隔一会儿再试（BRIDGE_RETRY_MS）：
+   ① app 升级后 userData / runtime 路径变了，启动瞬间可能还没就绪；
+   ② 模块找到了但类还没实例化 —— 那时桥会自己 setter，不用重试。
+   重试只在「连模块/类都没找到」时发生，成功一次就永久停。 */
+async function ensureBridge(st) {
+  if (st.bridgeHooked) return;
+  const now = Date.now();
+  if (st.bridgeLastTry && now - st.bridgeLastTry < BRIDGE_RETRY_MS) return;
+  st.bridgeLastTry = now;
+  await hookBridge(st).catch((err) => log("hookBridge failed", String(err?.message || err)));
+}
+
+/* ------------------------------------------------------------------ 自检
+
+   把「状态条不出现」拆成能一眼看懂的几项：数据目录 / runtime 桥 / 数据库 /
+   浮层挂载。日志里只打一次，也可以手动跑 `node scripts/doctor.mjs`。
+   DOM 侧的信息要向渲染进程要 —— 走 probe 的同一个通道，多问一次 selfCheck。 */
+async function collectSelfCheck(st) {
+  const out = { version: VERSION, platform: PLATFORM };
+  try {
+    out.dataRoots = probeDataRoots();
+    out.db = dbPath;
+    out.bridge = st.bridgeHooked ? "hooked" : st.bridgeInstalled ? "installed(pending)" : "missing";
+    out.runtimeDirs = runtimeMainDirs();
+    const e = st.electron;
+    if (e) {
+      const wins = e.BrowserWindow.getAllWindows().filter((w) => isAppWindow(w));
+      out.windows = [];
+      for (const w of wins) {
+        try {
+          const r = await w.webContents.executeJavaScript(
+            "window.__MIMO_METER__ && window.__MIMO_METER__.selfCheck ? window.__MIMO_METER__.selfCheck() : null",
+            true,
+          );
+          out.windows.push(r || { overlay: "not loaded" });
+        } catch (err) {
+          out.windows.push({ overlay: "probe failed", error: String(err?.message || err) });
+        }
+      }
+    }
+  } catch (err) {
+    out.error = String(err?.message || err);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ 启动 */
+
+/* 给一个窗口挂上注入点。同一窗口只挂一次（key 记在 st.windows 里），
+   因为 boot 会在启动补一遍、之后再来 browser-window-created 又给一次。 */
+function hookWindow(st, win) {
+  try {
+    const wc = win.webContents;
+    const rec = st.windows.get(wc);
+    if (rec && rec.loadHooked) return;
+    st.windows.set(wc, { ...(rec || {}), loadHooked: true });
+    /* 主框架换文档（⌘R / 崩溃恢复 / 更新后重载）：insertCSS 的产物随旧文档消失，
+       记录也必须作废，否则 injectWindow 会以为样式还在，跳过注入。
+       did-navigate-in-page（SPA 路由）不算，那种情况样式还在。 */
+    wc.on("did-navigate", () => st.windows.delete(wc));
+    wc.on("did-finish-load", () => injectWindow(st, win));
+    wc.on("did-navigate-in-page", () => injectWindow(st, win));
+    setTimeout(() => injectWindow(st, win), 600);
+  } catch (err) {
+    log("window hook failed", String(err?.message || err));
+  }
+}
 
 async function boot(st) {
   if (st.started) return;
@@ -1055,28 +1331,21 @@ async function boot(st) {
   }
   await ensureAssets(st);
   await openDb();
-  await hookBridge(st).catch((err) => log("hookBridge failed", String(err?.message || err)));
+  await ensureBridge(st);
 
-  e.app.on("browser-window-created", (_ev, win) => {
-    try {
-      const wc = win.webContents;
-      /* 主框架换文档（⌘R / 崩溃恢复 / 更新后重载）：insertCSS 的产物随旧文档消失，
-         记录也必须作废，否则 injectWindow 会以为样式还在，跳过注入。
-         did-navigate-in-page（SPA 路由）不算，那种情况样式还在。 */
-      wc.on("did-navigate", () => st.windows.delete(wc));
-      wc.on("did-finish-load", () => injectWindow(st, win));
-      wc.on("did-navigate-in-page", () => injectWindow(st, win));
-      setTimeout(() => injectWindow(st, win), 600);
-    } catch (err) {
-      log("window hook failed", String(err?.message || err));
-    }
-  });
+  /* 窗口可能在我们 import 之前就建好了（引擎在主进程里被很早 import），
+     browser-window-created 只覆盖之后创建的窗口 —— 先补一遍现状。 */
+  for (const win of e.BrowserWindow.getAllWindows()) hookWindow(st, win);
 
-  if (e.app.isReady()) {
-    setTimeout(() => injectAll(st), 300);
-  } else {
-    e.app.once("ready", () => setTimeout(() => injectAll(st), 300));
-  }
+  e.app.on("browser-window-created", (_ev, win) => hookWindow(st, win));
+
+  /* 已存在的窗口里，渲染进程可能还没跑起来，隔几拍再补注入：
+     只有 300ms 一次的话，冷启动慢的机器（或窗口刚恢复）会一直等到下一次导航。
+     三次之后交给 pollSid 的自动补挂，不再重排。 */
+  const afterWindows = () => injectAll(st).catch(() => {});
+  setTimeout(afterWindows, 300);
+  setTimeout(afterWindows, 1500);
+  setTimeout(afterWindows, 4000);
 
   st.pollTimer = setInterval(() => {
     pollSid(st).catch(() => {});
@@ -1107,13 +1376,33 @@ async function boot(st) {
   e.app.on("before-quit", onQuit);
   e.app.on("will-quit", onQuit);
 
+  /* 启动 8 秒后自检一次：只有出问题时才写日志（正常不制造噪音） */
+  const selfCheckTimer = setTimeout(() => {
+    collectSelfCheck(st)
+      .then((r) => {
+        const broken =
+          r.bridge !== "hooked" ||
+          !r.db ||
+          !r.windows ||
+          !r.windows.length ||
+          r.windows.some((w) => !w || w.overlay === "not loaded");
+        if (broken) log("selfcheck (degraded)", r);
+        else log("selfcheck ok", { bridge: r.bridge, windows: r.windows.length, db: !!r.db });
+      })
+      .catch(() => {});
+  }, 8000);
+  if (selfCheckTimer.unref) selfCheckTimer.unref();
+
   log("booted", {
     plugin: VERSION,
     overlay: st.overlayVersion,
     platform: PLATFORM,
     appData: appDataRoot(),
+    dataRoots: probeDataRoots(),
+    runtimeDirs: runtimeMainDirs(),
     logDir: logRoot(),
     db: dbPath,
+    bridge: st.bridgeHooked,
   });
   flushLog();
 }
@@ -1122,6 +1411,26 @@ async function boot(st) {
 
 export default async function mimoMeter(input, options) {
   const st = engineState();
+  /* 引擎是按 hook 名调方法的 —— 某次升级换了签名就会撞上 TypeError，
+     而我们抛出去会打断引擎自己的插件/事件分发链，代价太大。
+     所以每个入口都兜住异常，只记日志。 */
+  const hook = (name, fn) => ({
+    [name]: (...a) => {
+      try {
+        return fn(...a);
+      } catch (err) {
+        log("hook failed", name, String(err?.message || err));
+        return undefined;
+      }
+    },
+  });
+  const safeEvent = (arg) => {
+    try {
+      onEngineEvent(st, arg);
+    } catch (err) {
+      /* 事件里抛错会污染引擎的事件总线，宁可吞掉 */
+    }
+  };
   /* 费用单位：引擎的 message.cost 是**美元**。
      实测拟合（325 条 step-finish，残差 2.8e-17）：input 0.14 / output(+reasoning) 0.28 /
      cache_read 0.0028 每百万 —— 正好等于 MiMo 官方人民币价（1.00 / 2.00 / 0.02）÷ 7.142857。
@@ -1132,9 +1441,14 @@ export default async function mimoMeter(input, options) {
     if (Number.isFinite(options.fx) && options.fx > 0) st.fx = options.fx;
     if (typeof options.showCny === "boolean") st.showCny = options.showCny;
   }
-  st.hook = st.hook || {
-    event: ({ event }) => {
-      try {
+  if (!st.hook) st.hook = hook("event", safeEvent);
+  boot(st).catch((err) => log("boot failed", String(err?.message || err)));
+  return st.hook;
+}
+
+function onEngineEvent(st, arg) {
+  try {
+        const event = arg && arg.event ? arg.event : arg;
         const type = event?.type;
         if (!type) return;
         const props = event?.properties || {};
@@ -1180,13 +1494,7 @@ export default async function mimoMeter(input, options) {
             if (sid === displaySid(st)) st.dirty = true;
           }
         }
-      } catch (err) {
-        log("event handler failed", String(err?.message || err));
-      }
-    },
-  };
-
-  boot(st).catch((err) => log("boot failed", String(err?.message || err)));
-
-  return st.hook;
+  } catch (err) {
+    log("event handler failed", String(err?.message || err));
+  }
 }
